@@ -1,0 +1,17 @@
+# Ensemble run seeded from a PDB structure. Run with:
+#   mol-ensemble-gen run examples/config_pdb.yaml
+# Only the per-chain sequence is read from the PDB; ESMFold2 re-folds it.
+input: examples/example.pdb        # .pdb / .ent
+out_dir: runs/example_pdb
+model_name: biohub/ESMFold2
+device: cuda
+
+ensemble:
+  members: 4                        # independent seeds
+  base_seed: 20260722
+
+sampling:
+  num_loops: 80                      # small for a quick test run (raise for production)
+  num_sampling_steps: 50
+  num_diffusion_samples: 2          # -> 8 structures total
+  noise_scale: 1.0
