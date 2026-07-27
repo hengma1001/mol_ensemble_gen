@@ -3,7 +3,7 @@ requires = ["flit_core >=2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name =  "mol-ensemble-gen"
+name =  "mol_ensemble_gen"
 authors = [
     {name = "Heng Ma", email = "heng.ma@anl.gov"},
 ]
@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mol-ensemble-gen = "python_package.cli:main"
+mol-ensemble-gen = "mol_ensemble_gen.cli:main"
 
 [project.optional-dependencies]
 spark = [
@@ -60,7 +60,7 @@ Source = "https://github.com/hengma1001/mol_ensemble_gen"
 Tracker = "https://github.com/hengma1001/mol_ensemble_gen/issues"
 
 [tool.flit.module]
-name = "python_package"
+name = "mol_ensemble_gen"
 
 [tool.bandit]
 exclude_dirs = ["build","dist","tests","scripts"]

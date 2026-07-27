@@ -59,7 +59,7 @@ input (FASTA | Boltz YAML) ──▶ EnsembleGenerator ──▶ Executor ──
 
 ### Module layout
 ```
-src/mol_ensemble_gen/            # (currently python_package/; rename recommended)
+src/mol_ensemble_gen/
   __init__.py
   esmfold2.py            # ESMFold2Model_API — backend wrapper (model load + single fold)   [exists]
   utils.py               # FASTA / Boltz-schema parsing                                      [exists]

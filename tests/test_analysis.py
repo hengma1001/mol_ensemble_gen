@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from python_package.analysis import (
+from mol_ensemble_gen.analysis import (
     analyze_run,
     cluster,
     confidence_filter,
@@ -17,7 +17,7 @@ from python_package.analysis import (
     rmsd,
     rmsf,
 )
-from python_package.cif import ca_coords, parse_cif_atoms
+from mol_ensemble_gen.cif import ca_coords, parse_cif_atoms
 
 _FIELDS = ["group_PDB", "label_atom_id", "label_comp_id", "label_asym_id",
            "label_seq_id", "Cartn_x", "Cartn_y", "Cartn_z", "B_iso_or_equiv"]

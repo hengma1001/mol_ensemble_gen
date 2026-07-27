@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from python_package.ensemble import EnsembleSpec, ESMFold2Ensemble, SamplingParams
-from python_package.pdb import parse_pdb_sequences
+from mol_ensemble_gen.ensemble import EnsembleSpec, ESMFold2Ensemble, SamplingParams
+from mol_ensemble_gen.pdb import parse_pdb_sequences
 
 # chignolin GYDPETGTWG, plus a second chain and noise to exercise the parser
 _PDB = """\

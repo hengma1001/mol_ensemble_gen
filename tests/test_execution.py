@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from python_package import execution
-from python_package.ensemble import EnsembleMember, EnsembleSpec
+from mol_ensemble_gen import execution
+from mol_ensemble_gen.ensemble import EnsembleMember, EnsembleSpec
 
 
 def _member(m: int) -> EnsembleMember:
@@ -168,7 +168,7 @@ def test_real_multi_gpu_fold(tmp_path):
         pytest.skip("need >=2 GPUs")
 
     example = Path(__file__).resolve().parents[1] / "examples" / "example.pdb"
-    from python_package.ensemble import SamplingParams
+    from mol_ensemble_gen.ensemble import SamplingParams
 
     spec = EnsembleSpec(
         members=4, base_seed=1,

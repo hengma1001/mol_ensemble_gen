@@ -1,6 +1,6 @@
 """Ensemble analysis: RMSD/RMSF, clustering, PCA, confidence filtering.
 
-Reads an ensemble produced by :class:`~python_package.ensemble.ESMFold2Ensemble`
+Reads an ensemble produced by :class:`~mol_ensemble_gen.ensemble.ESMFold2Ensemble`
 (``metadata.csv`` + per-member ``.cif``) and turns it into a conformational
 landscape: which structures cluster together, how much each residue moves, and
 where members sit in coordinate PCA space. numpy + scipy only.

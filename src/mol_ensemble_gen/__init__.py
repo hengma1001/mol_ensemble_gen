@@ -4,7 +4,7 @@
 #   -------------------------------------------------------------
 """mol_ensemble_gen — biomolecular configuration ensembles with ESMFold2.
 
-Public entry point: :class:`ESMFold2Ensemble` (see :mod:`python_package.ensemble`).
+Public entry point: :class:`ESMFold2Ensemble` (see :mod:`mol_ensemble_gen.ensemble`).
 """
 from __future__ import annotations
 

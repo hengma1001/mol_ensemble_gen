@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from python_package.ensemble import (
+from mol_ensemble_gen.ensemble import (
     EnsembleMember,
     EnsembleSpec,
     ESMFold2Ensemble,

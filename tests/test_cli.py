@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from python_package.cli import (
+from mol_ensemble_gen.cli import (
     RunConfig,
     _apply_overrides,
     build_parser,

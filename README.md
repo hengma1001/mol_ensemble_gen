@@ -60,7 +60,7 @@ A run writes, into `out_dir`:
 ### Python API
 
 ```python
-from python_package import ESMFold2Ensemble, EnsembleSpec, SamplingParams, analyze_run
+from mol_ensemble_gen import ESMFold2Ensemble, EnsembleSpec, SamplingParams, analyze_run
 
 spec = EnsembleSpec(
     members=32,
@@ -111,7 +111,7 @@ shardable across workers without coordination.
 
 ## Multi-GPU execution
 
-`LocalGPUExecutor` (`python_package.execution`) fans members across GPUs with
+`LocalGPUExecutor` (`mol_ensemble_gen.execution`) fans members across GPUs with
 `torch.multiprocessing.spawn` — one worker/model per GPU, member indices sharded
 round-robin. Each completed member writes an atomic `.member_XXXX.json`
 checkpoint, so an interrupted run resumes by skipping members already on disk and
@@ -122,7 +122,7 @@ boundary), and only the parent writes shared metadata — no contention.
 ## Project layout
 
 ```
-src/python_package/
+src/mol_ensemble_gen/
   ensemble.py      # ESMFold2Ensemble, EnsembleSpec, SamplingParams, seed derivation
   execution.py     # LocalGPUExecutor: multi-GPU fan-out + checkpoint/restart
   analysis.py      # RMSD/RMSF, PCA, clustering, confidence filtering
