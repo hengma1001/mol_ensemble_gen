@@ -35,6 +35,11 @@ mol-ensemble-gen = "mol_ensemble_gen.cli:main"
 spark = [
     "pyspark>=3.0.0"
 ]
+training = [
+    "h5py>=3.8",          # read mdCATH per-domain HDF5 files
+    "mdtraj>=1.9",        # optional: DSSP / secondary-structure analysis
+    "wandb>=0.16",        # optional: experiment tracking (enable via wandb.enabled)
+]
 test = [
     "bandit[toml]==1.7.5",
     "black==23.3.0",

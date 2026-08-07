@@ -129,6 +129,75 @@ def analyze(args: argparse.Namespace) -> None:
           f"analysis_summary.json to {args.out_dir}")
 
 
+def _parse_int_list(spec: str | None) -> list[int] | None:
+    """Parse ``"320,450"`` → ``[320, 450]`` (None passes through)."""
+    if spec is None:
+        return None
+    return [int(x) for x in spec.split(",") if x.strip() != ""]
+
+
+def featurize_cache(args: argparse.Namespace) -> None:
+    """Cache the frozen trunk's conditioning + atom map for every domain."""
+    from .training.config import load_train_config
+    from .training.featurize import featurize_all
+
+    cfg = load_train_config(args.config)
+    results = featurize_all(cfg, overwrite=args.overwrite)
+    by_status: dict[str, int] = {}
+    for r in results:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+    print(f"[featurize] {dict(sorted(by_status.items()))}")
+
+
+def finetune(args: argparse.Namespace) -> None:
+    """Finetune the diffusion module + temperature embedder (DDP under torchrun)."""
+    from .training.config import load_train_config
+    from .training.trainer import train
+
+    train(load_train_config(args.config))
+
+
+def sample_md(args: argparse.Namespace) -> None:
+    """Sample temperature-conditioned ensembles from a finetuned checkpoint."""
+    from .training.config import load_train_config
+    from .training.sample import sample_temperatures
+
+    cfg = load_train_config(args.config)
+    temps = _parse_int_list(args.temperatures) or cfg.data.temperatures
+    out_dir = args.out_dir or str(Path(cfg.out_dir) / "samples")
+    ckpt = args.checkpoint or str(Path(cfg.out_dir) / "checkpoint.pt")
+    sample_temperatures(
+        ckpt, args.input, [float(t) for t in temps], out_dir,
+        members=args.members, base_seed=args.base_seed, device=args.device or "cuda",
+    )
+
+
+def eval_md(args: argparse.Namespace) -> None:
+    """Score a sampled ensemble against mdCATH MD (per-temperature + monotonicity)."""
+    from .training.config import load_train_config
+    from .training.eval import evaluate_run
+
+    cfg = load_train_config(args.config)
+    temps = _parse_int_list(args.temperatures) or cfg.data.temperatures
+    summary = evaluate_run(args.sampled_dir, cfg.data.mdcath_dir, args.domain, temps, skip=args.skip)
+    print(f"[eval] {args.domain}: mean RMSF Pearson {summary['mean_rmsf_pearson']}, "
+          f"spread monotonic {summary['spread_monotonic']}")
+
+
+def slurm_train(args: argparse.Namespace) -> None:
+    """Render (and optionally submit) an sbatch script for finetuning."""
+    from .training.config import load_train_config
+    from .training.slurm import slurm_config_from_dict, submit, write_script
+
+    cfg = load_train_config(args.config)
+    slurm = slurm_config_from_dict(cfg.slurm)
+    if args.submit:
+        submit(args.config, slurm, args.script_path)
+    else:
+        path = write_script(args.config, slurm, args.script_path)
+        print(f"[slurm] wrote {path} (submit with: sbatch {path})")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mol-ensemble-gen", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -151,6 +220,36 @@ def build_parser() -> argparse.ArgumentParser:
     an_p.add_argument("--cluster-cutoff", type=float, default=2.0, help="RMSD cutoff (Å) for clustering")
     an_p.add_argument("--n-clusters", type=int, default=None, help="fixed cluster count (overrides cutoff)")
     an_p.add_argument("--chain", type=str, default=None, help="restrict RMSD/PCA to one chain id")
+
+    # -- training / finetuning subcommands ---------------------------------
+    fc_p = sub.add_parser("featurize-cache", help="cache frozen-trunk conditioning per domain")
+    fc_p.add_argument("config", type=str, help="finetuning config YAML")
+    fc_p.add_argument("--overwrite", action="store_true", help="re-featurize cached domains")
+
+    ft_p = sub.add_parser("finetune", help="finetune the diffusion module (run under torchrun for DDP)")
+    ft_p.add_argument("config", type=str, help="finetuning config YAML")
+
+    sm_p = sub.add_parser("sample-md", help="sample temperature-conditioned ensembles from a checkpoint")
+    sm_p.add_argument("config", type=str, help="finetuning config YAML")
+    sm_p.add_argument("--input", type=str, required=True, help="input .fasta/.pdb/.yaml to fold")
+    sm_p.add_argument("--checkpoint", type=str, default=None, help="checkpoint (default out_dir/checkpoint.pt)")
+    sm_p.add_argument("--temperatures", type=str, default=None, help="e.g. '320,450' (default: config temps)")
+    sm_p.add_argument("--members", type=int, default=50, help="seeds per temperature")
+    sm_p.add_argument("--base-seed", type=int, default=0, help="base seed for member derivation")
+    sm_p.add_argument("--out-dir", type=str, default=None, help="output dir (default out_dir/samples)")
+    sm_p.add_argument("--device", type=str, default=None, help="device (default cuda)")
+
+    em_p = sub.add_parser("eval-md", help="score a sampled ensemble against mdCATH MD")
+    em_p.add_argument("config", type=str, help="finetuning config YAML")
+    em_p.add_argument("--sampled-dir", type=str, required=True, help="dir of T<K>/ sampled ensembles")
+    em_p.add_argument("--domain", type=str, required=True, help="mdCATH domain id to compare against")
+    em_p.add_argument("--temperatures", type=str, default=None, help="e.g. '320,450' (default: config temps)")
+    em_p.add_argument("--skip", type=int, default=10, help="MD frame stride when reading references")
+
+    st_p = sub.add_parser("slurm-train", help="render/submit an sbatch script for finetuning")
+    st_p.add_argument("config", type=str, help="finetuning config YAML")
+    st_p.add_argument("--submit", action="store_true", help="sbatch the script instead of just writing it")
+    st_p.add_argument("--script-path", type=str, default="train.slurm", help="where to write the sbatch script")
     return parser
 
 
@@ -161,6 +260,16 @@ def main(argv: list[str] | None = None) -> int:
         run(cfg)
     elif args.command == "analyze":
         analyze(args)
+    elif args.command == "featurize-cache":
+        featurize_cache(args)
+    elif args.command == "finetune":
+        finetune(args)
+    elif args.command == "sample-md":
+        sample_md(args)
+    elif args.command == "eval-md":
+        eval_md(args)
+    elif args.command == "slurm-train":
+        slurm_train(args)
     return 0
 
 
