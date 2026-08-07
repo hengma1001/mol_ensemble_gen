@@ -130,3 +130,7 @@ dmypy.json
 
 # ensemble run outputs
 runs/
+
+# featurization caches (per-domain trunk conditioning + atom maps; regenerate
+# with `mol-ensemble-gen featurize-cache`)
+cache/
