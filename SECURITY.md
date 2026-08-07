@@ -1,41 +1,38 @@
-<!-- BEGIN MICROSOFT SECURITY.MD V0.0.5 BLOCK -->
+# Security Policy
 
-## Security
+## Supported versions
 
-Microsoft takes the security of our software products and services seriously, which includes all source code repositories managed through our GitHub organizations, which include [Microsoft](https://github.com/Microsoft), [Azure](https://github.com/Azure), [DotNet](https://github.com/dotnet), [AspNet](https://github.com/aspnet), [Xamarin](https://github.com/xamarin), and [our GitHub organizations](https://opensource.microsoft.com/).
+This is a research project; only the `main` branch receives fixes.
 
-If you believe you have found a security vulnerability in any Microsoft-owned repository that meets [Microsoft's definition of a security vulnerability](https://docs.microsoft.com/en-us/previous-versions/tn-archive/cc751383(v=technet.10)), please report it to us as described below.
-
-## Reporting Security Issues
+## Reporting a vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them to the Microsoft Security Response Center (MSRC) at [https://msrc.microsoft.com/create-report](https://msrc.microsoft.com/create-report).
+Instead, use GitHub's private vulnerability reporting on this repository
+(Security → Report a vulnerability), or email the maintainer at
+<hengma@uchicago.edu>.
 
-If you prefer to submit without logging in, send email to [secure@microsoft.com](mailto:secure@microsoft.com).  If possible, encrypt your message with our PGP key; please download it from the [Microsoft Security Response Center PGP Key page](https://www.microsoft.com/en-us/msrc/pgp-key-msrc).
+Please include as much of the following as you can:
 
-You should receive a response within 24 hours. If for some reason you do not, please follow up via email to ensure we received your original message. Additional information can be found at [microsoft.com/msrc](https://www.microsoft.com/msrc).
+- Type of issue (e.g. path traversal, deserialization of untrusted data, code
+  injection via a config or checkpoint file)
+- Full path of the source file(s) involved
+- The affected commit or tag
+- Any configuration needed to reproduce
+- Step-by-step reproduction instructions, and a proof of concept if you have one
+- What an attacker could achieve with it
 
-Please include the requested information listed below (as much as you can provide) to help us better understand the nature and scope of the possible issue:
+You can expect an initial response within a week. Since this project is maintained
+on a best-effort basis alongside research work, please allow reasonable time for a
+fix before public disclosure.
 
-  * Type of issue (e.g. buffer overflow, SQL injection, cross-site scripting, etc.)
-  * Full paths of source file(s) related to the manifestation of the issue
-  * The location of the affected source code (tag/branch/commit or direct URL)
-  * Any special configuration required to reproduce the issue
-  * Step-by-step instructions to reproduce the issue
-  * Proof-of-concept or exploit code (if possible)
-  * Impact of the issue, including how an attacker might exploit the issue
+## Scope notes
 
-This information will help us triage your report more quickly.
+Two things worth knowing about this project's threat model:
 
-If you are reporting for a bug bounty, more complete reports can contribute to a higher bounty award. Please visit our [Microsoft Bug Bounty Program](https://microsoft.com/msrc/bounty) page for more details about our active programs.
-
-## Preferred Languages
-
-We prefer all communications to be in English.
-
-## Policy
-
-Microsoft follows the principle of [Coordinated Vulnerability Disclosure](https://www.microsoft.com/en-us/msrc/cvd).
-
-<!-- END MICROSOFT SECURITY.MD BLOCK -->
+- **Checkpoints and caches are trusted input.** `torch.load` is used with
+  `weights_only=False` to read training checkpoints and featurization caches,
+  which means loading one is equivalent to executing its author's code. Only load
+  checkpoints and `cache/` directories you produced or otherwise trust.
+- **Model weights come from a third party.** ESMFold2 weights are downloaded from
+  the Hugging Face Hub on first use; their integrity is whatever the Hub provides.

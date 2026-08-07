@@ -1,25 +1,29 @@
-# TODO: The maintainer of this repo has not yet edited this file
-
-**REPO OWNER**: Do you want Customer Service & Support (CSS) support for this product/project?
-
-- **No CSS support:** Fill out this template with information about how to file issues and get help.
-- **Yes CSS support:** Fill out an intake form at [aka.ms/spot](https://aka.ms/spot). CSS will work with/help you to determine next steps. More details also available at [aka.ms/onboardsupport](https://aka.ms/onboardsupport).
-- **Not sure?** Fill out a SPOT intake as though the answer were "Yes". CSS will help you decide.
-
-*Then remove this first heading from this SUPPORT.MD file before publishing your repo.*
-
 # Support
 
 ## How to file issues and get help
 
-This project uses GitHub Issues to track bugs and feature requests. Please search the existing
-issues before filing new issues to avoid duplicates.  For new issues, file your bug or
-feature request as a new Issue.
+This project uses [GitHub Issues](https://github.com/hengma1001/mol_ensemble_gen/issues)
+to track bugs and feature requests. Please search existing issues before filing a
+new one to avoid duplicates.
 
-For help and questions about using this project, please **REPO MAINTAINER: INSERT INSTRUCTIONS HERE
-FOR HOW TO ENGAGE REPO OWNERS OR COMMUNITY FOR HELP. COULD BE A STACK OVERFLOW TAG OR OTHER
-CHANNEL. WHERE WILL YOU HELP PEOPLE?**.
+When reporting a problem, it helps a lot to include:
 
-## Microsoft Support Policy
+- The command you ran and the config YAML (redact any paths you'd rather not share)
+- The full traceback, not just the last line
+- Which environment you were in, and whether `esm` / `transformers` / a GPU were
+  involved — many issues are specific to the Biohub `esm` fork
+- For training issues, the `out_dir` layout and the step the run reached
 
-Support for this **PROJECT or PRODUCT** is limited to the resources listed above.
+For questions about using the package, open a Discussion or an Issue with the
+`question` label.
+
+## Support policy
+
+This is a research project maintained on a best-effort basis alongside other work.
+There is no service-level agreement: expect a reply within about a week. Bug
+reports with a minimal reproduction get looked at first.
+
+`@pytest.mark.gpu` tests and anything touching mdCATH need hardware and data that
+may not be available to the maintainer for a given report, so reproductions that
+run offline (the default `pytest -m "not integration"` suite) are far easier to act
+on.

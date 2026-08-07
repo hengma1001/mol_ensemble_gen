@@ -1,5 +1,5 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
-// https://github.com/microsoft/vscode-dev-containers/tree/v0.222.0/containers/python-3-miniconda
+// Dev container for mol_ensemble_gen. Format reference:
+// https://containers.dev/implementors/json_reference/
 {
 	"name": "Python Environment",
 	"build": {
@@ -24,19 +24,9 @@
 				"GitHub.copilot"
 			],
 			"settings": {
-				"python.defaultInterpreterPath": "/usr/local/bin/python",
-				"black-formatter.path": [
-					"/usr/local/py-utils/bin/black"
-				],
-				"pylint.path": [
-					"/usr/local/py-utils/bin/pylint"
-				],
-				"flake8.path": [
-					"/usr/local/py-utils/bin/flake8"
-				],
-				"isort.path": [
-					"/usr/local/py-utils/bin/isort"
-				]
+				// Tools come from the image's own site-packages (on PATH) rather
+				// than the /usr/local/py-utils/ layout the previous base image had.
+				"python.defaultInterpreterPath": "/usr/local/bin/python"
 			}
 		}
 	},
