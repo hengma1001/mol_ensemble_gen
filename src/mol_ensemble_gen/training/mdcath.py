@@ -244,15 +244,21 @@ def _worker_rank(rank: int, world_size: int) -> tuple[int, int]:
     return rank * info.num_workers + info.id, world_size * info.num_workers
 
 
-def make_dataset(cfg, rank: int = 0, world_size: int = 1):
-    """Build an :class:`MDCathDataset` from a :class:`~.config.TrainConfig`."""
+def make_dataset(cfg, rank: int = 0, world_size: int = 1, domains: list[str] | None = None):
+    """Build an :class:`MDCathDataset` from a :class:`~.config.TrainConfig`.
+
+    ``domains`` overrides the resolved training split — pass
+    ``cfg.data.val_domains`` to build the validation stream. Note validation is
+    deliberately built with ``world_size=1`` by the trainer so every rank sees the
+    same frames and the ranks cannot desynchronise.
+    """
     from .config import resolve_domains
 
     data = cfg.data
     return _dataset_cls()(
         mdcath_dir=data.mdcath_dir,
         cache_dir=data.cache_dir,
-        domains=resolve_domains(data),
+        domains=resolve_domains(data) if domains is None else list(domains),
         temperatures=data.temperatures or list(TEMPERATURES),
         replicas=data.replicas,
         skip_frames=data.skip_frames,

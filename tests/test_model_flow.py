@@ -202,39 +202,78 @@ def test_flow_ode_sample_is_deterministic_and_finite(sampler):
     from mol_ensemble_gen.model.denoiser import DiffusionModule
     from mol_ensemble_gen.model.flow import flow_ode_sample
 
-    model = DiffusionModule(TINY).eval()
-    cond = _tiny_inputs(torch)
-    n_atoms = cond["tok_idx"].shape[1]
-    kw = dict(
-        n_atoms=n_atoms,
-        batch=1,
-        steps=3,
-        sampler=sampler,
-        device="cpu",
-        atom_mask=cond["ref_mask"][0],
-    )
+    from mol_ensemble_gen.model.denoiser import GeometryOps
 
-    a = flow_ode_sample(model, cond, generator=torch.Generator().manual_seed(5), **kw)
-    b = flow_ode_sample(model, cond, generator=torch.Generator().manual_seed(5), **kw)
-    assert a.shape == (1, n_atoms, 3)
-    assert torch.isfinite(a).all()
-    # Same seed ⇒ same trajectory: this is the probability-flow ODE, no churn.
-    torch.testing.assert_close(a, b, rtol=0, atol=0)
+    model = DiffusionModule(TINY).eval()
+    geo = GeometryOps()
+    cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
+    n_atoms = cond["tok_idx"].shape[1]
+
+    torch.manual_seed(11)   # _center_random_augmentation draws from global RNG
+    a = flow_ode_sample(model, geo, steps=3, sampler=sampler,
+                        generator=torch.Generator().manual_seed(5), **cond)
+    torch.manual_seed(11)
+    b = flow_ode_sample(model, geo, steps=3, sampler=sampler,
+                        generator=torch.Generator().manual_seed(5), **cond)
+
+    x = a["sample_atom_coords"]
+    assert x.shape == (1, n_atoms, 3)
+    assert torch.isfinite(x).all()
+    assert a["diff_token_repr"] is not None
+    # Same seeds ⇒ same trajectory: probability-flow ODE, no stochastic churn.
+    torch.testing.assert_close(x, b["sample_atom_coords"], rtol=0, atol=0)
+
+
+@pytest.mark.unit
+def test_flow_ode_sample_stays_bounded_over_a_full_schedule():
+    """Guards the divergence that a 3-step smoke test cannot see.
+
+    The first flow-space implementation of this sampler integrated the *flow*
+    variable, where the state sits at noise scale (‖x‖≈1) while x̂₀ is at Ångström
+    scale (‖x̂₀‖≈25). The per-step rigid align then translated the state onto x̂₀'s
+    centroid — a shift larger than the state itself — and it blew up ~10× per step,
+    reaching 1e13 on real weights. Only a full-length run exposes it.
+    """
+    torch = pytest.importorskip("torch")
+    from mol_ensemble_gen.model.denoiser import DiffusionModule, GeometryOps
+    from mol_ensemble_gen.model.flow import flow_ode_sample
+
+    model = DiffusionModule(TINY).eval()
+    cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
+    torch.manual_seed(3)
+    out = flow_ode_sample(model, GeometryOps(), steps=50, sampler="euler",
+                          generator=torch.Generator().manual_seed(1), **cond)
+    x = out["sample_atom_coords"]
+    assert torch.isfinite(x).all()
+    # A collapsing or exploding integrator fails this; a plausible structure does
+    # not. sigma_max is 256, so anything past a few hundred Å is divergence.
+    rg = (x[0] - x[0].mean(0)).pow(2).sum(-1).mean().sqrt()
+    assert rg < 500.0, f"radius of gyration {float(rg):.1f} Å — integrator diverged"
 
 
 @pytest.mark.unit
 def test_flow_ode_sample_rejects_unknown_sampler():
     torch = pytest.importorskip("torch")
-    from mol_ensemble_gen.model.denoiser import DiffusionModule
+    from mol_ensemble_gen.model.denoiser import DiffusionModule, GeometryOps
     from mol_ensemble_gen.model.flow import flow_ode_sample
 
     model = DiffusionModule(TINY).eval()
-    cond = _tiny_inputs(torch)
+    cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
     with pytest.raises(ValueError, match="sampler"):
-        flow_ode_sample(
-            model, cond, n_atoms=cond["tok_idx"].shape[1], steps=1,
-            sampler="rk4", device="cpu",
-        )
+        flow_ode_sample(model, GeometryOps(), steps=1, sampler="rk4", **cond)
+
+
+@pytest.mark.unit
+def test_only_one_flow_ode_sample_implementation_exists():
+    """training.sample must re-export the model implementation, not define its own.
+
+    Two integrators drifting apart — with only the unused one under test — is how
+    the divergence above survived. Pin the identity.
+    """
+    from mol_ensemble_gen.model.flow import flow_ode_sample as canonical
+    from mol_ensemble_gen.training.sample import flow_ode_sample as reexported
+
+    assert reexported is canonical
 
 
 # ---------------------------------------------------------------------------

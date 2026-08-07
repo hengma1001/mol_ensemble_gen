@@ -170,6 +170,11 @@ class TrainConfig:
     amp_dtype: str = "bfloat16"               # bfloat16 | float16 | float32
     log_every: int = 20
     ckpt_every: int = 1000
+    #: Run the loss over ``val_batches`` micro-batches of ``data.val_domains``
+    #: every N optimizer steps (0 disables). Without this there is no signal that
+    #: distinguishes "still learning" from "overfitting three domains".
+    val_every: int = 500
+    val_batches: int = 16
     resume: bool = True                       # continue from out_dir checkpoint if present
     slurm: dict[str, Any] = field(default_factory=dict)   # SLURM resources (see slurm.py)
 

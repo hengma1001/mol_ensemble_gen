@@ -20,111 +20,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Conditioning kwargs forwarded verbatim from ``head.sample`` to the denoiser
-# inside the flow ODE loop (``x_noisy``/``t_hat``/``num_diffusion_samples`` are
-# supplied per-step, so they are excluded here).
-_DENOISER_KEYS = (
-    "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
-    "ref_space_uid", "tok_idx", "s_inputs", "s_trunk", "z_trunk",
-    "relative_position_encoding", "asym_id", "residue_index", "entity_id",
-    "token_index", "sym_id", "token_attention_mask",
-)
+# The ODE sampler lives in mol_ensemble_gen.model.flow — one implementation,
+# re-exported here because this module is where callers expect to find it.
+from ..model.flow import flow_ode_sample  # noqa: E402,F401
 
 
-def flow_ode_sample(
-    head,
-    *,
-    steps: int = 50,
-    sampler: str = "euler",
-    sigma_max: float = 256.0,
-    t_min: float = 1e-3,
-    generator=None,
-    **conditioning,
-) -> dict:
-    """Deterministic rectified-flow ODE sampler over the pretrained EDM denoiser.
+def plan_denoiser(trained_keys, backend: str, t_conditioning: str) -> tuple[bool, str]:
+    """Decide which denoiser a checkpoint must be loaded into.
 
-    A drop-in replacement for ``structure_head.sample`` that accepts the exact
-    same conditioning kwargs and returns the same ``{"sample_atom_coords",
-    "diff_token_repr"}`` dict, so the surrounding :class:`ESMFold2Ensemble`
-    plumbing is reused unchanged.
+    Returns ``(use_our_denoiser, t_conditioning_to_build)``.
 
-    Integrates the probability-flow ODE on a **uniform-in-t** grid from noise
-    (``t_max = σ_max/(1+σ_max)``) to data (``t_min``), mapping each time to the
-    EDM noise level ``σ = t/(1−t)`` the denoiser expects. Each step calls the
-    denoiser for ``x̂₀ = D(x;σ)``, aligns ``x`` onto it (fp32 Kabsch), and takes
-    the score step ``x += (σ'−σ)·(x−x̂₀)/σ``. With ``sampler="heun"`` a 2nd-order
-    correction re-evaluates the derivative at the endpoint. Deterministic: no
-    stochastic churn (``γ=0``), unlike the Karras SDE in ``head.sample``.
+    Pure, so the decision is unit-testable without loading a 1.5 GB model — this is
+    the logic that silently broke ``sample-md`` for every native-``t`` checkpoint.
+    A checkpoint carrying ``conditioning.t_*`` tensors has no slots for them in the
+    reference denoiser, and loading it non-strictly there would drop the learned
+    conditioning without a word, so those checkpoints *must* use ours.
     """
-    import torch
-
-    s_inputs = conditioning["s_inputs"]
-    tok_idx = conditioning["tok_idx"]
-    ref_mask = conditioning["ref_mask"]
-    device = s_inputs.device
-    n_atoms = tok_idx.shape[1]
-    num_diffusion_samples = int(conditioning.get("num_diffusion_samples", 1) or 1)
-    target_batch = s_inputs.shape[0] * num_diffusion_samples
-
-    # Uniform-in-t grid from t_max (noise) down to t_min (data); σ = t/(1−t).
-    t_max = sigma_max / (1.0 + sigma_max)
-    ts = torch.linspace(t_max, t_min, steps + 1, device=device, dtype=torch.float32)
-    sigmas = ts / (1.0 - ts)                       # σ_k, monotonically decreasing
-
-    kwargs = {k: conditioning.get(k) for k in _DENOISER_KEYS}
-    atom_mask = ref_mask.repeat_interleave(num_diffusion_samples, 0).float()
-
-    def _denoise(x, sigma_val):
-        out = head.diffusion_module(
-            x_noisy=x,
-            t_hat=torch.full((target_batch,), sigma_val, device=device, dtype=torch.float32),
-            num_diffusion_samples=num_diffusion_samples,
-            return_token_repr=True,
-            return_atom_repr=False,
-            inference_cache=None,
-            **kwargs,
-        )
-        return out["x_denoised"], out["token_repr"]
-
-    x = float(sigmas[0]) * torch.randn(
-        target_batch, n_atoms, 3, device=device, dtype=torch.float32, generator=generator
-    )
-    token_repr = None
-
-    for i in range(steps):
-        sigma = float(sigmas[i])
-        sigma_next = float(sigmas[i + 1])
-
-        x, _ = head._center_random_augmentation(x, atom_mask, second_coords=None)
-        x_denoised, token_repr = _denoise(x, sigma)
-
-        # Align the current coords onto the prediction before the score step
-        # (fp32 Kabsch; det/SVD have no bf16 kernel — matches head.sample).
-        with torch.autocast(device_type=device.type, enabled=False):
-            x = self_align(head, x, x_denoised, atom_mask)
-        x = x.to(x_denoised.dtype)
-
-        d = (x - x_denoised) / sigma                 # score direction
-        x_euler = x + (sigma_next - sigma) * d
-
-        if sampler == "heun" and sigma_next > 0.0:
-            xd_next, _ = _denoise(x_euler, sigma_next)
-            with torch.autocast(device_type=device.type, enabled=False):
-                x_euler_a = self_align(head, x_euler, xd_next, atom_mask)
-            x_euler_a = x_euler_a.to(xd_next.dtype)
-            d_next = (x_euler_a - xd_next) / sigma_next
-            x = x + (sigma_next - sigma) * 0.5 * (d + d_next)
-        else:
-            x = x_euler
-
-    return {"sample_atom_coords": x, "diff_token_repr": token_repr}
-
-
-def self_align(head, x, x_denoised, atom_mask):
-    """Kabsch-align ``x`` onto ``x_denoised`` (fp32), returning the moved ``x``."""
-    return head._weighted_rigid_align(
-        x.float(), x_denoised.float(), atom_mask, atom_mask
-    )
+    has_t_head = any(str(k).startswith("conditioning.t_") for k in trained_keys)
+    if has_t_head:
+        return True, t_conditioning if t_conditioning != "off" else "add"
+    return backend == "ours", "off"
 
 
 def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "cuda"):
@@ -151,11 +66,10 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
     # is missing part of what was trained — so substitute our denoiser instead,
     # and load strictly into it.
     trained_keys = set(state["diffusion_module"])
-    has_t_head = any(k.startswith("conditioning.t_") for k in trained_keys)
-    if has_t_head or cfg.model.backend == "ours":
+    use_ours, t_cond = plan_denoiser(trained_keys, cfg.model.backend, cfg.flow.t_conditioning)
+    if use_ours:
         from ..model.denoiser import DenoiserConfig, DiffusionModule
 
-        t_cond = cfg.flow.t_conditioning if has_t_head else "off"
         module = DiffusionModule(DenoiserConfig(t_conditioning=t_cond)).to(device).eval()
         module.load_state_dict(state["diffusion_module"])  # strict: shapes must match
         model.structure_head.diffusion_module = module
@@ -191,9 +105,10 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
             steps = int(kwargs.get("num_sampling_steps") or flow.num_sampling_steps)
             smax = kwargs.get("max_inference_sigma")
             smax = float(smax) if smax is not None else flow.sigma_max
+            # head supplies the geometry helpers; head.diffusion_module the network.
             return flow_ode_sample(
-                head, steps=steps, sampler=flow.sampler, sigma_max=smax,
-                t_min=flow.t_min, **kwargs,
+                head.diffusion_module, head, steps=steps, sampler=flow.sampler,
+                sigma_max=smax, t_min=flow.t_min, **kwargs,
             )
         return original(*args, **kwargs)
 

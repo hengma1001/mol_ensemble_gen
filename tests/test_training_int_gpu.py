@@ -186,7 +186,7 @@ def test_flow_ode_sample_produces_finite_coords():
     gen = torch.Generator(device=device).manual_seed(0)
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         out = flow_ode_sample(
-            head, steps=5, sampler="euler", sigma_max=256.0,
+            head.diffusion_module, head, steps=5, sampler="euler", sigma_max=256.0,
             generator=gen, **conditioning,
         )
 
@@ -199,7 +199,7 @@ def test_flow_ode_sample_produces_finite_coords():
     gen2 = torch.Generator(device=device).manual_seed(0)
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         out_h = flow_ode_sample(
-            head, steps=3, sampler="heun", sigma_max=256.0,
+            head.diffusion_module, head, steps=3, sampler="heun", sigma_max=256.0,
             generator=gen2, **conditioning_h,
         )
     assert torch.isfinite(out_h["sample_atom_coords"]).all()

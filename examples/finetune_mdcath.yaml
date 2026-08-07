@@ -14,18 +14,49 @@ seed: 20260728
 data:
   mdcath_dir: /nfs/lambda_stor_01/homes/heng.ma/dataset/mdcath   # dir of mdcath_dataset_<domain>.h5
   cache_dir: cache/featurized
-  # A few short domains (L<=~150) to validate end-to-end before the full run.
+  # 27 training + 7 held-out domains, ~47-169 residues, selected evenly across
+  # the mdCATH file-size range (size tracks residue count at ~4.5 MB/residue).
   domains:
     - 1r9lA02
     - 1ha8A00
     - 153lA00
+    - 4tx8A01
+    - 4wczA02
+    - 2k57A00
+    - 4qiwK00
+    - 1twfA04
+    - 1wrjA01
+    - 3cj8B02
+    - 3t47A00
+    - 4oj5A01
+    - 4nphA02
+    - 3l9zA01
+    - 5h1sY00
+    - 2lhrA00
+    - 3kewA01
+    - 1jvmB00
+    - 2lmlA00
+    - 2llzA01
+    - 3pmgA02
+    - 1vctA01
+    - 1ja8A02
+    - 2i54A02
+    - 3c3wB02
+    - 3d9yA00
+    - 3pt1A02
   val_domains:
     - 16pkA02
+    - 1bxrA05
+    - 2uxtA03
+    - 5gv0A00
+    - 3ml3A00
+    - 1vw4J01
+    - 1vkiA00
   temperatures: [320, 348, 379, 413, 450]
   replicas: null                        # null = all 5 replicas
   skip_frames: 20                        # frame stride (pilot: coarse)
   frames_per_step: 8                     # frames per micro-step (one domain+T)
-  max_len: 200                           # skip longer domains in the pilot
+  max_len: 220                           # covers the 208-residue val domain
   min_matched_fraction: 0.98             # drop domains whose atom map is worse
 
 model:

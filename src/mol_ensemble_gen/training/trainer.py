@@ -67,14 +67,14 @@ def _make_trainable():
             self._scheme = scheme
             object.__setattr__(self, "_flow", flow)
 
-        def forward(self, conditioning, gt_coords, atom_mask, temperature):
+        def forward(self, conditioning, gt_coords, atom_mask, temperature, generator=None):
             from .loss import diffusion_loss
 
             return diffusion_loss(
                 self._scheme,
                 self.diffusion_module, self._head, self.temp_embedder,
                 conditioning, gt_coords, atom_mask, temperature,
-                flow=self._flow,
+                flow=self._flow, generator=generator,
             )
 
     return _Trainable
@@ -204,6 +204,54 @@ def _cycle(loader):
             yield item
 
 
+def _run_validation(module, cond_cache, val_iter, n_batches, amp_dtype, device, seed):
+    """Average the loss over ``n_batches`` held-out micro-batches.
+
+    Two details make the number comparable across evaluations:
+
+    * a **fixed generator seed**, so every call draws the same noise levels and the
+      curve reflects the model changing rather than the σ draw;
+    * ``module.eval()`` around the pass, restored afterwards.
+
+    Every DDP rank runs the identical batches (the val stream is built with
+    ``world_size=1``) and computes the same value, so no collective is needed and
+    the ranks cannot drift apart. Returns ``{}`` when there is nothing to validate.
+    """
+    import torch
+
+    if val_iter is None or n_batches <= 0:
+        return {}
+
+    was_training = module.training
+    module.eval()
+    losses, mses = [], []
+    try:
+        with torch.no_grad():
+            for i in range(n_batches):
+                try:
+                    batch = next(val_iter)
+                except StopIteration:
+                    break
+                cond = cond_cache.get(batch.domain)
+                gt = torch.from_numpy(batch.gt_coords).to(device)
+                mask = torch.from_numpy(batch.atom_mask).to(device)
+                # Same seed each call ⇒ same σ per position in the sequence.
+                gen = torch.Generator(device=device).manual_seed(seed + i)
+                with torch.autocast(
+                    "cuda", dtype=amp_dtype, enabled=amp_dtype is not torch.float32
+                ):
+                    loss, metrics = module(cond, gt, mask, batch.temperature, generator=gen)
+                losses.append(float(loss))
+                mses.append(metrics["mse"])
+    finally:
+        if was_training:
+            module.train()
+
+    if not losses:
+        return {}
+    return {"loss": sum(losses) / len(losses), "mse": sum(mses) / len(mses)}
+
+
 def _init_wandb(cfg, cfg_dict: dict, resume_step: int):
     """Init a W&B run on rank 0 (lazy import); return the run or ``None``.
 
@@ -325,6 +373,24 @@ def train(cfg) -> None:
     dataset = make_dataset(cfg, rank=rank, world_size=world_size)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=2, pin_memory=False)
     cond_cache = _CondCache(cfg.data.cache_dir, device)
+
+    # Held-out stream. Built with world_size=1 and num_workers=0 so every rank
+    # walks the identical frames in the identical order — the validation number is
+    # then rank-independent and needs no collective.
+    val_iter = None
+    if cfg.val_every > 0 and cfg.data.val_domains:
+        val_ds = make_dataset(cfg, rank=0, world_size=1, domains=cfg.data.val_domains)
+        val_iter = _cycle(
+            torch.utils.data.DataLoader(val_ds, batch_size=None, num_workers=0)
+        )
+        if rank == 0:
+            print(
+                f"[train] validation on {cfg.data.val_domains} every "
+                f"{cfg.val_every} steps ({cfg.val_batches} batches)",
+                flush=True,
+            )
+    elif rank == 0:
+        print("[train] no validation (set val_every and data.val_domains)", flush=True)
     cfg_dict = config_to_dict(cfg)
     accum = cfg.optim.grad_accum
     wandb_run = _init_wandb(cfg, cfg_dict, global_step) if rank == 0 else None
@@ -379,6 +445,22 @@ def train(cfg) -> None:
                     }
                     wandb_run.log(log_data, step=global_step)
                 running = 0.0
+            # Every rank runs this (identical batches, no collective), so the
+            # ranks stay in lockstep; only rank 0 reports.
+            if val_iter is not None and global_step % cfg.val_every == 0:
+                val = _run_validation(
+                    trainable, cond_cache, val_iter, cfg.val_batches,
+                    amp_dtype, device, seed=cfg.seed,
+                )
+                if rank == 0 and val:
+                    print(f"[train] step {global_step} "
+                          f"val_loss {val['loss']:.4f} val_mse {val['mse']:.4f}",
+                          flush=True)
+                    if wandb_run is not None:
+                        wandb_run.log(
+                            {f"val/{k}": v for k, v in val.items()}, step=global_step
+                        )
+
             if rank == 0 and global_step % cfg.ckpt_every == 0:
                 _save_checkpoint(ckpt_path, trainable, optim, sched, scaler, global_step, cfg_dict)
 

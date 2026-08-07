@@ -25,13 +25,16 @@ This module makes that native rather than implicit:
 * :class:`FlowDenoiser` — ``velocity()`` / ``predict_x0()`` on top of any
   :class:`~mol_ensemble_gen.model.denoiser.DiffusionModule`, doing the ``(1−t)``
   rescaling that the σ-space caller would otherwise have to remember.
-* :func:`flow_ode_sample` — a deterministic probability-flow ODE integrator that
-  steps **in flow space** (``x_t``, uniform in ``t``), not in EDM σ-space.
+* :func:`flow_ode_sample` — the **one** probability-flow ODE integrator in the
+  package (``training.sample`` re-exports this exact object). Its grid is uniform
+  in ``t`` but it steps the **EDM** variable; see the function docstring for why
+  stepping ``x_t`` directly diverges.
 
 Note the scaling subtlety, which is easy to get wrong: the denoiser must be fed
 ``x_t/(1−t)``, not ``x_t``. An integrator that works in EDM space (where the state
 *is* ``x₀ + σε``) skips that division legitimately; one that works in flow space
-must not.
+must not — and must also not rigid-align a noise-scale state onto an Ångström-scale
+prediction, which is what broke the first attempt.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ import math
 import torch
 from torch import Tensor
 
-from .denoiser import GeometryOps
+from .denoiser import GeometryOps  # noqa: F401  (re-exported for callers)
 
 #: EDM/Karras constants of the pretrained model, duplicated here so this module
 #: does not import the training package (which depends on it).
@@ -155,90 +158,130 @@ class FlowDenoiser:
 
 
 # ---------------------------------------------------------------------------
-# deterministic probability-flow ODE sampler (in flow space)
+# deterministic probability-flow ODE sampler
 # ---------------------------------------------------------------------------
+
+#: Conditioning kwargs forwarded verbatim to the denoiser inside the ODE loop.
+#: ``x_noisy``/``t_hat``/``num_diffusion_samples`` are supplied per step.
+_DENOISER_KEYS = (
+    "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
+    "ref_space_uid", "tok_idx", "s_inputs", "s_trunk", "z_trunk",
+    "relative_position_encoding", "asym_id", "residue_index", "entity_id",
+    "token_index", "sym_id", "token_attention_mask",
+)
 
 
 @torch.no_grad()
 def flow_ode_sample(
-    module,
-    conditioning: dict,
+    denoiser,
+    geometry,
     *,
-    n_atoms: int,
-    batch: int = 1,
     steps: int = 50,
     sampler: str = "euler",
     sigma_max: float = 256.0,
     t_min: float = 1e-3,
-    atom_mask: Tensor | None = None,
-    align_each_step: bool = True,
-    generator: torch.Generator | None = None,
-    device: torch.device | str = "cuda",
-    geometry: GeometryOps | None = None,
-) -> Tensor:
-    """Integrate ``dx/dt = v̂(x, t)`` from noise to data. Deterministic.
+    generator=None,
+    **conditioning,
+) -> dict:
+    """Deterministic probability-flow ODE sampler over the pretrained EDM denoiser.
 
-    Steps on a **uniform-in-t** grid from ``t_max = σ_max/(1+σ_max)`` down to
-    ``t_min``, in flow space: the state is ``x_t``, initialized at ``t_max`` from
-    ``t_max·ε`` (at ``t = 1`` the path is exactly ``ε``). ``sampler="heun"`` adds a
-    second-order correction, costing one extra denoiser call per step.
+    A drop-in replacement for ``structure_head.sample``: it takes the same
+    conditioning kwargs and returns the same ``{"sample_atom_coords",
+    "diff_token_repr"}`` dict, so the surrounding ensemble plumbing is unchanged.
 
-    There is no stochastic churn — this is the probability-flow ODE, not the Karras
-    SDE that ``structure_head.sample`` runs. Returns ``x₀`` of shape
-    ``(batch, n_atoms, 3)``.
+    The time grid is **uniform in the flow time** ``t``, from ``t_max =
+    σ_max/(1+σ_max)`` down to ``t_min``, but the integration variable is the **EDM
+    coordinate** ``x = x₀ + σ·ε`` with ``σ = t/(1−t)``, stepping
+    ``x += (σ' − σ)·(x − x̂₀)/σ``. Both parameterizations describe the same
+    continuous ODE, but stepping in EDM space is the one that is numerically safe:
+
+    > Integrating in *flow* space (state ``x_t = (1−t)x₀ + tε``) puts the state at
+    > noise scale (‖x‖ ≈ 1) while ``x̂₀`` is at Ångström scale (‖x̂₀‖ ≈ 25). The
+    > per-step rigid align then translates the state onto ``x̂₀``'s centroid — a
+    > shift several times larger than the state itself — which feeds back and
+    > diverges by roughly 10× per step. Measured, not hypothetical. In EDM space
+    > the state and ``x̂₀`` share a scale, so the align is meaningful.
+
+    ``sampler="heun"`` adds a second-order correction at the cost of one extra
+    denoiser call per step. There is no stochastic churn (γ=0), unlike the Karras
+    SDE in ``head.sample``.
+
+    Parameters
+    ----------
+    denoiser:
+        The diffusion module — anything with the ``DiffusionModule`` forward.
+    geometry:
+        Supplies ``_center_random_augmentation`` and ``_weighted_rigid_align``;
+        either :class:`~mol_ensemble_gen.model.denoiser.GeometryOps` or the
+        reference ``structure_head``.
     """
-    geometry = geometry or GeometryOps()
-    flow = FlowDenoiser(module)
+    s_inputs = conditioning["s_inputs"]
+    tok_idx = conditioning["tok_idx"]
+    ref_mask = conditioning["ref_mask"]
+    device = s_inputs.device
+    n_atoms = tok_idx.shape[1]
+    num_diffusion_samples = int(conditioning.get("num_diffusion_samples", 1) or 1)
+    target_batch = s_inputs.shape[0] * num_diffusion_samples
 
+    if sampler not in ("euler", "heun"):
+        raise ValueError(f"unknown sampler {sampler!r} (expected 'euler' or 'heun')")
+
+    # Uniform-in-t grid, mapped to the EDM noise levels the denoiser consumes.
     t_max = sigma_max / (1.0 + sigma_max)
     ts = torch.linspace(t_max, t_min, steps + 1, device=device, dtype=torch.float32)
+    sigmas = ts / (1.0 - ts)
 
-    if atom_mask is None:
-        atom_mask = torch.ones(batch, n_atoms, device=device, dtype=torch.float32)
-    elif atom_mask.dim() == 1:
-        atom_mask = atom_mask.to(device).float().unsqueeze(0).expand(batch, -1)
-    else:
-        atom_mask = atom_mask.to(device).float()
+    kwargs = {k: conditioning.get(k) for k in _DENOISER_KEYS}
+    supports_flow_t = bool(getattr(denoiser, "supports_flow_time", False))
+    atom_mask = ref_mask.repeat_interleave(num_diffusion_samples, 0).float()
 
-    # At t = t_max the path is x = t_max·ε (the (1-t)·x0 term has all but vanished).
-    x = float(t_max) * torch.randn(
-        batch, n_atoms, 3, device=device, dtype=torch.float32, generator=generator
+    def _denoise(x, sigma_val, t_val):
+        extra = {}
+        if supports_flow_t:
+            extra["flow_t"] = torch.full(
+                (target_batch,), t_val, device=device, dtype=torch.float32
+            )
+        out = denoiser(
+            x_noisy=x,
+            t_hat=torch.full((target_batch,), sigma_val, device=device, dtype=torch.float32),
+            num_diffusion_samples=num_diffusion_samples,
+            return_token_repr=True,
+            return_atom_repr=False,
+            inference_cache=None,
+            **kwargs,
+            **extra,
+        )
+        return out["x_denoised"], out["token_repr"]
+
+    def _align(x, target):
+        # SVD/det have no bf16 kernel, so force fp32 with autocast off.
+        with torch.autocast(device_type=device.type, enabled=False):
+            return geometry._weighted_rigid_align(
+                x.float(), target.float(), atom_mask, atom_mask
+            )
+
+    x = float(sigmas[0]) * torch.randn(
+        target_batch, n_atoms, 3, device=device, dtype=torch.float32, generator=generator
     )
-
-    def _velocity(state: Tensor, t_scalar: float) -> Tensor:
-        t = torch.full((batch,), t_scalar, device=device, dtype=torch.float32)
-        return flow.velocity(state, t, num_diffusion_samples=batch, **conditioning)
+    token_repr = None
 
     for i in range(steps):
-        t_now = float(ts[i])
-        t_next = float(ts[i + 1])
-        dt = t_next - t_now  # negative: integrating toward data
+        sigma, sigma_next = float(sigmas[i]), float(sigmas[i + 1])
+        t_now, t_next = float(ts[i]), float(ts[i + 1])
 
-        v = _velocity(x, t_now)
-        if align_each_step:
-            # Remove accumulated rigid drift against the current x0 estimate. The
-            # Kabsch SVD has no bf16 kernel, so force fp32 with autocast off.
-            x0_hat = x0_from_velocity(
-                x, v, torch.full((batch,), t_now, device=device, dtype=torch.float32)
-            )
-            with torch.autocast(device_type=torch.device(device).type, enabled=False):
-                x = geometry._weighted_rigid_align(
-                    x.float(), x0_hat.float(), atom_mask, atom_mask
-                )
-            v = _velocity(x, t_now)
+        x, _ = geometry._center_random_augmentation(x, atom_mask, second_coords=None)
+        x_denoised, token_repr = _denoise(x, sigma, t_now)
+        x = _align(x, x_denoised).to(x_denoised.dtype)
 
-        if sampler == "heun" and i < steps - 1:
-            x_euler = x + dt * v
-            v_next = _velocity(x_euler, t_next)
-            x = x + dt * 0.5 * (v + v_next)
-        elif sampler in ("euler", "heun"):
-            x = x + dt * v
+        d = (x - x_denoised) / sigma                      # score direction
+        x_euler = x + (sigma_next - sigma) * d
+
+        if sampler == "heun" and sigma_next > 0.0:
+            xd_next, _ = _denoise(x_euler, sigma_next, t_next)
+            x_euler_a = _align(x_euler, xd_next).to(xd_next.dtype)
+            d_next = (x_euler_a - xd_next) / sigma_next
+            x = x + (sigma_next - sigma) * 0.5 * (d + d_next)
         else:
-            raise ValueError(f"unknown sampler {sampler!r} (expected 'euler' or 'heun')")
+            x = x_euler
 
-    # The final state sits at t_min, not 0; one last x0 read-out lands on the data
-    # manifold instead of leaving a t_min·ε residual.
-    v = _velocity(x, float(ts[-1]))
-    return x0_from_velocity(
-        x, v, torch.full((batch,), float(ts[-1]), device=device, dtype=torch.float32)
-    )
+    return {"sample_atom_coords": x, "diff_token_repr": token_repr}
