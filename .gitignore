@@ -134,3 +134,15 @@ runs/
 # featurization caches (per-domain trunk conditioning + atom maps; regenerate
 # with `mol-ensemble-gen featurize-cache`)
 cache/
+
+# Weights & Biases run data, when WANDB_DIR is not pointed inside runs/
+wandb/
+
+# sbatch script rendered by `mol-ensemble-gen slurm-train` (its default
+# --script-path). Root-anchored so a deliberately kept job script elsewhere in
+# the tree is still tracked.
+/train.slurm
+
+# Claude Code per-machine settings. Only the .local file is ignored: a shared
+# .claude/settings.json, or project skills/agents, should still be committed.
+.claude/settings.local.json
