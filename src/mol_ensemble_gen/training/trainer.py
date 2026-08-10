@@ -155,6 +155,14 @@ def _build_denoiser(cfg, device: str):
     dcfg = DenoiserConfig(t_conditioning=cfg.flow.t_conditioning)
     module = DiffusionModule(dcfg)
 
+    if not cfg.model.pretrained:
+        # From-scratch experiment: never touch ESMFold2 at all. Note the two
+        # zero-init heads (temperature, native-t) start silent here too, but with
+        # random weights there is no pretrained behaviour for them to preserve.
+        n = sum(p.numel() for p in module.parameters())
+        print(f"[train] RANDOM INIT — {n:,} parameters, no pretrained weights", flush=True)
+        return module.to(device), GeometryOps()
+
     # Pull the pretrained denoiser tensors from the reference model, then release it.
     ref_head = _load_head(cfg.model.model_name, "cpu")
     state = ref_head.diffusion_module.state_dict()
@@ -204,13 +212,17 @@ def _cycle(loader):
             yield item
 
 
-def _run_validation(module, cond_cache, val_iter, n_batches, amp_dtype, device, seed):
-    """Average the loss over ``n_batches`` held-out micro-batches.
+def _run_validation(module, cond_cache, val_loader, n_batches, amp_dtype, device, seed):
+    """Average the loss over the **same** ``n_batches`` held-out micro-batches.
 
-    Two details make the number comparable across evaluations:
+    Three details make the number comparable across evaluations:
 
-    * a **fixed generator seed**, so every call draws the same noise levels and the
-      curve reflects the model changing rather than the σ draw;
+    * ``val_loader`` is re-iterated from the start on every call, so each
+      evaluation scores the identical frames. Advancing a single shared iterator
+      instead makes every call score *different* domains and temperatures, and
+      those differ enough in difficulty to swamp the training signal — measured:
+      val_mse moved 3.3 → 6.3 between two evaluations of barely-changed models.
+    * a **fixed generator seed**, so the σ draw is also held constant;
     * ``module.eval()`` around the pass, restored afterwards.
 
     Every DDP rank runs the identical batches (the val stream is built with
@@ -219,8 +231,9 @@ def _run_validation(module, cond_cache, val_iter, n_batches, amp_dtype, device, 
     """
     import torch
 
-    if val_iter is None or n_batches <= 0:
+    if val_loader is None or n_batches <= 0:
         return {}
+    val_iter = iter(val_loader)
 
     was_training = module.training
     module.eval()
@@ -377,12 +390,12 @@ def train(cfg) -> None:
     # Held-out stream. Built with world_size=1 and num_workers=0 so every rank
     # walks the identical frames in the identical order — the validation number is
     # then rank-independent and needs no collective.
-    val_iter = None
+    val_loader = None
     if cfg.val_every > 0 and cfg.data.val_domains:
         val_ds = make_dataset(cfg, rank=0, world_size=1, domains=cfg.data.val_domains)
-        val_iter = _cycle(
-            torch.utils.data.DataLoader(val_ds, batch_size=None, num_workers=0)
-        )
+        # Kept as the loader, not an iterator: _run_validation re-iterates it so
+        # every evaluation scores the same frames.
+        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=None, num_workers=0)
         if rank == 0:
             print(
                 f"[train] validation on {cfg.data.val_domains} every "
@@ -447,9 +460,9 @@ def train(cfg) -> None:
                 running = 0.0
             # Every rank runs this (identical batches, no collective), so the
             # ranks stay in lockstep; only rank 0 reports.
-            if val_iter is not None and global_step % cfg.val_every == 0:
+            if val_loader is not None and global_step % cfg.val_every == 0:
                 val = _run_validation(
-                    trainable, cond_cache, val_iter, cfg.val_batches,
+                    trainable, cond_cache, val_loader, cfg.val_batches,
                     amp_dtype, device, seed=cfg.seed,
                 )
                 if rank == 0 and val:

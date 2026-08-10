@@ -337,6 +337,21 @@ def test_yaml_bare_off_is_accepted_for_t_conditioning(tmp_path):
 
 
 @pytest.mark.unit
+def test_pretrained_flag_defaults_true_and_requires_our_backend():
+    """``pretrained: false`` is the from-scratch switch; only our backend can do it."""
+    from mol_ensemble_gen.training.config import TrainConfig, _build, _validate
+
+    assert TrainConfig().model.pretrained is True
+
+    ok = _build(TrainConfig, {"model": {"pretrained": False, "backend": "ours"}})
+    _validate(ok)
+
+    bad = _build(TrainConfig, {"model": {"pretrained": False, "backend": "reference"}})
+    with pytest.raises(ValueError, match="backend: ours"):
+        _validate(bad)
+
+
+@pytest.mark.unit
 def test_bad_backend_rejected():
     from mol_ensemble_gen.training.config import TrainConfig, _build, _validate
 

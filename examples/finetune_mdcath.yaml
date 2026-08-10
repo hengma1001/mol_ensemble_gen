@@ -8,7 +8,7 @@
 #   mol-ensemble-gen eval-md   examples/finetune_mdcath.yaml --sampled-dir runs/finetune/samples --domain 1abcA00
 #
 # ---- PILOT (start here): a handful of short domains, single GPU ----
-out_dir: runs/finetune_pilot_flow_v4   # separate per scheme/fix: `resume` keys off out_dir
+out_dir: runs/finetune_v5_flow          # 27 domains + held-out validation
 seed: 20260728
 
 data:

@@ -56,6 +56,12 @@ class ModelConfig:
     #: * ``"reference"`` — pull ``structure_head`` out of the ``transformers``
     #:   model, as the original trainer did. No native-``t`` support.
     backend: str = "ours"
+    #: Load the pretrained ESMFold2 denoiser weights. ``False`` trains the
+    #: diffusion module from **random initialization** — a from-scratch experiment
+    #: rather than a finetune, so ESMFold2 is never loaded at all. Note the
+    #: optimizer defaults are tuned for finetuning and are far too conservative
+    #: here; ``lr`` in particular needs raising. Requires ``backend: ours``.
+    pretrained: bool = True
 
 
 @dataclass
@@ -253,6 +259,11 @@ def _validate(cfg: TrainConfig) -> None:
         )
     if cfg.model.backend not in ("ours", "reference"):
         raise ValueError(f"model.backend must be 'ours' or 'reference', got {cfg.model.backend!r}")
+    if not cfg.model.pretrained and cfg.model.backend != "ours":
+        raise ValueError(
+            "model.pretrained: false needs model.backend: ours — the reference "
+            "backend has no way to build a randomly-initialized denoiser."
+        )
     if cfg.model.backend == "reference" and cfg.flow.t_conditioning != "off":
         raise ValueError(
             "native flow-time conditioning needs model.backend: ours "
