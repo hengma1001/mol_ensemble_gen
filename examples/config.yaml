@@ -1,0 +1,21 @@
+# Ensemble run config. Run with:  mol-ensemble-gen run examples/config.yaml
+input: examples/example.fasta      # a .fasta or a Boltz-style .yaml
+out_dir: runs/example
+model_name: biohub/ESMFold2
+device: cuda
+
+ensemble:
+  members: 10                      # independent seeds
+  base_seed: 20260722             # reproducible per-member seeds
+
+sampling:
+  num_loops: 20
+  num_sampling_steps: 200
+  num_diffusion_samples: 2        # -> 20 structures total (members x samples)
+  lm_dropout: 0.3                 # MC dropout on LM features
+  lm_mask_pct: 0.15               # sequence masking
+  noise_scale: 1.0                # diffusion temperature (diversity dial)
+  # step_scale: null
+  # max_inference_sigma: null
+  # msa_max_depth: 1024
+  # msa_column_mask_rate: 0.1

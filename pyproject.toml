@@ -3,11 +3,11 @@ requires = ["flit_core >=2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name =  "py-project-toml"
+name =  "mol_ensemble_gen"
 authors = [
     {name = "Heng Ma", email = "heng.ma@anl.gov"},
 ]
-description = "Sample Python Project for creating a new Python Module"
+description = "Generate biomolecular configuration/conformational ensembles with ESMFold2"
 readme = "README.md"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,10 +20,25 @@ classifiers = [
 ]
 requires-python = ">=3.10.1"
 dynamic = ["version"]
+dependencies = [
+    "esm@git+https://github.com/Biohub/esm.git@main",
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+]
+
+[project.scripts]
+mol-ensemble-gen = "mol_ensemble_gen.cli:main"
 
 [project.optional-dependencies]
 spark = [
     "pyspark>=3.0.0"
+]
+training = [
+    "h5py>=3.8",          # read mdCATH per-domain HDF5 files
+    "mdtraj>=1.9",        # optional: DSSP / secondary-structure analysis
+    "wandb>=0.16",        # optional: experiment tracking (enable via wandb.enabled)
 ]
 test = [
     "bandit[toml]==1.7.5",
@@ -46,12 +61,11 @@ test = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/microsoft/python-package-template/tree/main#readme"
-Source = "https://github.com/microsoft/python-package-template"
-Tracker = "https://github.com/microsoft/python-package-template/issues"
+Source = "https://github.com/hengma1001/mol_ensemble_gen"
+Tracker = "https://github.com/hengma1001/mol_ensemble_gen/issues"
 
 [tool.flit.module]
-name = "python_package"
+name = "mol_ensemble_gen"
 
 [tool.bandit]
 exclude_dirs = ["build","dist","tests","scripts"]

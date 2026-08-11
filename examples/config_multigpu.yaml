@@ -1,0 +1,24 @@
+# Multi-GPU ensemble run. Fans members across 8 local GPUs, one model each.
+#   mol-ensemble-gen run examples/config_multigpu.yaml
+#   mol-ensemble-gen run examples/config.yaml --gpus 0,1,2,3   # or override on the CLI
+#
+# Restart-safe: re-running the same command skips members already checkpointed
+# (.member_XXXX.json) and merges everything into metadata.csv / manifest.json.
+input: examples/example.pdb          # a .fasta, .pdb, or Boltz-style .yaml
+out_dir: runs/example_multigpu
+model_name: biohub/ESMFold2
+
+execution:
+  backend: local                     # local (fan across gpus) | inline (single device)
+  gpus: [0, 1, 2, 3, 4, 5, 6, 7]     # one worker/model per GPU
+
+ensemble:
+  members: 64                        # independent seeds, sharded round-robin over GPUs
+  base_seed: 20260722
+
+sampling:
+  num_loops: 20
+  num_sampling_steps: 200
+  num_diffusion_samples: 1
+  noise_scale: 1.0                   # diffusion temperature (diversity dial)
+  lm_dropout: 0.3                    # MC dropout on LM features

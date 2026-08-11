@@ -4,4 +4,4 @@ src
 .. toctree::
    :maxdepth: 4
 
-   python_package
+   mol_ensemble_gen
