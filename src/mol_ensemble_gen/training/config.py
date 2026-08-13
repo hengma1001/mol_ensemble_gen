@@ -133,6 +133,13 @@ class FlowConfig:
     t_min: float = 1e-3                        # clamp t∈[t_min,1−t_min] (tames 1/t²)
     num_sampling_steps: int = 50              # ODE integration steps
     sampler: str = "euler"                    # "euler" | "heun" (2nd-order)
+    #: How the sampling σ grid is spaced. "karras" is the EDM ρ-schedule (roughly
+    #: geometric in σ); "uniform_t" walks the flow time linearly, which collapses
+    #: the entire high-σ range into the first step — with sigma_max=256 and 50
+    #: steps it jumps 256 → 41, so the mode-selecting part of the trajectory gets
+    #: one step at a noise level covering 0.4% of training draws.
+    schedule: str = "karras"                  # "karras" | "uniform_t"
+    rho: float = 7.0                          # Karras schedule exponent
     sigma_max: float = 256.0                   # start noise level (t_max=σ/(1+σ))
     #: Native flow-time conditioning in our denoiser: "off" | "add" | "replace".
     #: "add" embeds t directly alongside the pretrained log-σ features with a
@@ -250,6 +257,10 @@ def _validate(cfg: TrainConfig) -> None:
         raise ValueError(f"flow.time_dist must be 'logitnormal' or 'uniform', got {cfg.flow.time_dist!r}")
     if cfg.flow.weighting not in ("velocity", "data"):
         raise ValueError(f"flow.weighting must be 'velocity' or 'data', got {cfg.flow.weighting!r}")
+    if cfg.flow.schedule not in ("karras", "uniform_t"):
+        raise ValueError(
+            f"flow.schedule must be 'karras' or 'uniform_t', got {cfg.flow.schedule!r}"
+        )
     if cfg.flow.sampler not in ("euler", "heun"):
         raise ValueError(f"flow.sampler must be 'euler' or 'heun', got {cfg.flow.sampler!r}")
     if cfg.flow.t_conditioning not in ("off", "add", "replace"):

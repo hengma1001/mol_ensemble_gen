@@ -26,9 +26,9 @@ This module makes that native rather than implicit:
   :class:`~mol_ensemble_gen.model.denoiser.DiffusionModule`, doing the ``(1−t)``
   rescaling that the σ-space caller would otherwise have to remember.
 * :func:`flow_ode_sample` — the **one** probability-flow ODE integrator in the
-  package (``training.sample`` re-exports this exact object). Its grid is uniform
-  in ``t`` but it steps the **EDM** variable; see the function docstring for why
-  stepping ``x_t`` directly diverges.
+  package (``training.sample`` re-exports this exact object). It steps the **EDM**
+  variable on a Karras ρ-schedule; see the function docstring for why stepping
+  ``x_t`` directly diverges, and why the σ spacing matters.
 
 Note the scaling subtlety, which is easy to get wrong: the denoiser must be fed
 ``x_t/(1−t)``, not ``x_t``. An integrator that works in EDM space (where the state
@@ -180,6 +180,8 @@ def flow_ode_sample(
     sampler: str = "euler",
     sigma_max: float = 256.0,
     t_min: float = 1e-3,
+    schedule: str = "karras",
+    rho: float = 7.0,
     generator=None,
     **conditioning,
 ) -> dict:
@@ -189,9 +191,8 @@ def flow_ode_sample(
     conditioning kwargs and returns the same ``{"sample_atom_coords",
     "diff_token_repr"}`` dict, so the surrounding ensemble plumbing is unchanged.
 
-    The time grid is **uniform in the flow time** ``t``, from ``t_max =
-    σ_max/(1+σ_max)`` down to ``t_min``, but the integration variable is the **EDM
-    coordinate** ``x = x₀ + σ·ε`` with ``σ = t/(1−t)``, stepping
+    The integration variable is the **EDM coordinate** ``x = x₀ + σ·ε`` with
+    ``σ = t/(1−t)``, stepping
     ``x += (σ' − σ)·(x − x̂₀)/σ``. Both parameterizations describe the same
     continuous ODE, but stepping in EDM space is the one that is numerically safe:
 
@@ -226,10 +227,31 @@ def flow_ode_sample(
     if sampler not in ("euler", "heun"):
         raise ValueError(f"unknown sampler {sampler!r} (expected 'euler' or 'heun')")
 
-    # Uniform-in-t grid, mapped to the EDM noise levels the denoiser consumes.
-    t_max = sigma_max / (1.0 + sigma_max)
-    ts = torch.linspace(t_max, t_min, steps + 1, device=device, dtype=torch.float32)
-    sigmas = ts / (1.0 - ts)
+    # The σ grid. Both options span the same endpoints; they differ in how the
+    # steps are distributed, and that distribution matters a great deal.
+    #
+    # "uniform_t" walks t linearly, which crushes the whole high-σ range into the
+    # first step: with sigma_max=256 and 50 steps it goes 256 → 41 → 22 → 15,
+    # so exactly one step lands above the training p95 (σ≈57). Since the early
+    # high-σ steps are what select the global mode, that decision is made by a
+    # single enormous Euler step evaluated where the model was trained on 0.4% of
+    # its draws.
+    #
+    # "karras" (default) is the EDM ρ-schedule, roughly geometric in σ, which
+    # spends a proper fraction of the steps across the high-σ decade.
+    sigma_min = t_min / (1.0 - t_min)
+    if schedule == "karras":
+        i = torch.arange(steps + 1, device=device, dtype=torch.float32) / max(1, steps)
+        sigmas = (
+            sigma_max ** (1.0 / rho) + i * (sigma_min ** (1.0 / rho) - sigma_max ** (1.0 / rho))
+        ) ** rho
+    elif schedule == "uniform_t":
+        t_max = sigma_max / (1.0 + sigma_max)
+        ts = torch.linspace(t_max, t_min, steps + 1, device=device, dtype=torch.float32)
+        sigmas = ts / (1.0 - ts)
+    else:
+        raise ValueError(f"unknown schedule {schedule!r} (expected 'karras' or 'uniform_t')")
+    ts = sigmas / (1.0 + sigmas)          # flow times, for native-t conditioning
 
     kwargs = {k: conditioning.get(k) for k in _DENOISER_KEYS}
     supports_flow_t = bool(getattr(denoiser, "supports_flow_time", False))
