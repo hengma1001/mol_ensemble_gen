@@ -357,3 +357,83 @@ def test_bad_backend_rejected():
 
     with pytest.raises(ValueError, match="backend"):
         _validate(_build(TrainConfig, {"model": {"backend": "jax"}}))
+
+
+# ---------------------------------------------------------------------------
+# sampling sigma schedule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("schedule", ["karras", "uniform_t"])
+def test_schedule_spans_the_same_endpoints(schedule):
+    """Both schedules must start at sigma_max and end at sigma_min; only spacing differs."""
+    torch = pytest.importorskip("torch")
+    from mol_ensemble_gen.model.denoiser import DiffusionModule, GeometryOps
+    from mol_ensemble_gen.model.flow import flow_ode_sample
+
+    seen = []
+    model = DiffusionModule(TINY).eval()
+    real = model.forward
+
+    def spy(**kw):
+        seen.append(float(kw["t_hat"][0]))
+        return real(**kw)
+
+    model.forward = spy
+    cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
+    torch.manual_seed(0)
+    flow_ode_sample(model, GeometryOps(), steps=8, sampler="euler", sigma_max=256.0,
+                    schedule=schedule, generator=torch.Generator().manual_seed(0), **cond)
+    assert seen[0] == pytest.approx(256.0, rel=1e-3), "must start at sigma_max"
+    assert seen == sorted(seen, reverse=True), "sigma must decrease monotonically"
+
+
+@pytest.mark.unit
+def test_karras_spends_more_steps_at_high_sigma_than_uniform_t():
+    """The reason the default changed.
+
+    uniform_t collapses the whole high-sigma range into the first step — with
+    sigma_max=256 and 50 steps it goes 256 -> 41, so exactly one step lands above
+    the training p95 (~57). Since the early high-sigma steps select the global
+    mode, that decision was being made by one huge step at a noise level covering
+    0.4% of training draws.
+    """
+    torch = pytest.importorskip("torch")
+
+    def grid(schedule, steps=50, smax=256.0, t_min=1e-3, rho=7.0):
+        smin = t_min / (1 - t_min)
+        if schedule == "karras":
+            i = torch.arange(steps + 1, dtype=torch.float32) / steps
+            return (smax ** (1 / rho) + i * (smin ** (1 / rho) - smax ** (1 / rho))) ** rho
+        t = torch.linspace(smax / (1 + smax), t_min, steps + 1)
+        return t / (1 - t)
+
+    P95 = 56.8          # training sigma p95 for the configured logit-normal draw
+    n_uniform = int((grid("uniform_t") > P95).sum())
+    n_karras = int((grid("karras") > P95).sum())
+    assert n_uniform == 1, n_uniform
+    assert n_karras >= 10, n_karras
+
+
+@pytest.mark.unit
+def test_unknown_schedule_rejected():
+    torch = pytest.importorskip("torch")
+    from mol_ensemble_gen.model.denoiser import DiffusionModule, GeometryOps
+    from mol_ensemble_gen.model.flow import flow_ode_sample
+
+    model = DiffusionModule(TINY).eval()
+    cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
+    with pytest.raises(ValueError, match="schedule"):
+        flow_ode_sample(model, GeometryOps(), steps=2, schedule="cosine", **cond)
+
+
+@pytest.mark.unit
+def test_schedule_config_defaults_and_validation():
+    from mol_ensemble_gen.training.config import TrainConfig, _build, _validate
+
+    assert TrainConfig().flow.schedule == "karras"
+    assert TrainConfig().flow.rho == 7.0
+    _validate(_build(TrainConfig, {"flow": {"schedule": "uniform_t"}}))
+    with pytest.raises(ValueError, match="schedule"):
+        _validate(_build(TrainConfig, {"flow": {"schedule": "linear"}}))

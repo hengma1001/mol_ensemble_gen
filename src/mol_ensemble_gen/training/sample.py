@@ -108,7 +108,8 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
             # head supplies the geometry helpers; head.diffusion_module the network.
             return flow_ode_sample(
                 head.diffusion_module, head, steps=steps, sampler=flow.sampler,
-                sigma_max=smax, t_min=flow.t_min, **kwargs,
+                sigma_max=smax, t_min=flow.t_min,
+                schedule=flow.schedule, rho=flow.rho, **kwargs,
             )
         return original(*args, **kwargs)
 
