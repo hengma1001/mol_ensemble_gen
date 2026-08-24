@@ -1,0 +1,221 @@
+# Finetune ESMFold2's diffusion module to reproduce mdCATH MD ensembles,
+# conditioned on temperature. Run in the env with the fork (genAI).
+#
+# Pipeline:
+#   mol-ensemble-gen featurize-cache examples/finetune_mdcath.yaml
+#   torchrun --standalone --nproc_per_node=8 -m mol_ensemble_gen.cli finetune examples/finetune_mdcath.yaml
+#   mol-ensemble-gen sample-md examples/finetune_mdcath.yaml --input some.fasta
+#   mol-ensemble-gen eval-md   examples/finetune_mdcath.yaml --sampled-dir runs/finetune/samples --domain 1abcA00
+#
+# ---- PILOT (start here): a handful of short domains, single GPU ----
+out_dir: runs/wide_data_flow
+seed: 20260728
+
+data:
+  mdcath_dir: /nfs/lambda_stor_01/homes/heng.ma/dataset/mdcath   # dir of mdcath_dataset_<domain>.h5
+  cache_dir: cache/featurized
+  # 102 training + 7 held-out domains, ~47-177 residues, selected evenly across
+  # the mdCATH file-size range (size tracks residue count at ~4.5 MB/residue).
+  # The held-out set is IDENTICAL to the 27-domain run so val numbers compare.
+  domains:
+    - 1r9lA02
+    - 1ha8A00
+    - 153lA00
+    - 4tx8A01
+    - 4wczA02
+    - 2k57A00
+    - 4qiwK00
+    - 1twfA04
+    - 1wrjA01
+    - 3cj8B02
+    - 3t47A00
+    - 4oj5A01
+    - 4nphA02
+    - 3l9zA01
+    - 5h1sY00
+    - 2lhrA00
+    - 3kewA01
+    - 1jvmB00
+    - 2lmlA00
+    - 2llzA01
+    - 3pmgA02
+    - 1vctA01
+    - 1ja8A02
+    - 2i54A02
+    - 3c3wB02
+    - 3d9yA00
+    - 3pt1A02
+    - 4j2nC00
+    - 2aujD04
+    - 2w9mA04
+    - 4c1nA01
+    - 3fgrA01
+    - 2q8vB00
+    - 2d46A00
+    - 1y69U01
+    - 2b97A00
+    - 2kybA00
+    - 2o8xA00
+    - 1on2A02
+    - 4i5sA01
+    - 2dyoA02
+    - 2jfdA03
+    - 3ajdA01
+    - 2lt4A00
+    - 4mb4A02
+    - 3t49A00
+    - 4nleA03
+    - 1ft9A02
+    - 2lrrA00
+    - 2loqA01
+    - 2lu2A00
+    - 3l1xA01
+    - 1wxpA01
+    - 2kp6A00
+    - 1wqaA04
+    - 1m6nA05
+    - 4a0tA03
+    - 4uqxA01
+    - 3c8yA02
+    - 1vs5C01
+    - 4gklA02
+    - 1c07A00
+    - 3mplA02
+    - 3a35A02
+    - 4kcaA03
+    - 2krhA00
+    - 2vh7A00
+    - 1bplA01
+    - 2vjnA02
+    - 4bx8A04
+    - 2mcmA00
+    - 2nteA02
+    - 4v2bA00
+    - 2va0A00
+    - 2qfpA01
+    - 5a2fA02
+    - 2aytA01
+    - 4yl4A00
+    - 3us3A01
+    - 1iu1B00
+    - 3c0wA02
+    - 2k2wA00
+    - 2l9wA00
+    - 2kdiA00
+    - 1wfmA00
+    - 2y1jA02
+    - 1ry9A00
+    - 1qo8A01
+    - 1r1mA00
+    - 3c8eB01
+    - 3rrcA02
+    - 5bqtC02
+    - 4nbzA00
+    - 1w36B04
+    - 1oo0A00
+    - 1guxB00
+    - 3h0gA05
+    - 4q9dB01
+    - 4z2zB00
+    - 3ghmA03
+    - 3ikoC02
+    - 2mcfA00
+  val_domains:
+    - 16pkA02
+    - 1bxrA05
+    - 2uxtA03
+    - 5gv0A00
+    - 3ml3A00
+    - 1vw4J01
+    - 1vkiA00
+  temperatures: [320, 348, 379, 413, 450]
+  replicas: null                        # null = all 5 replicas
+  skip_frames: 20                        # frame stride (pilot: coarse)
+  frames_per_step: 8                     # frames per micro-step (one domain+T)
+  max_len: 220                           # covers the 208-residue val domain
+  min_matched_fraction: 0.98             # drop domains whose atom map is worse
+
+model:
+  model_name: biohub/ESMFold2
+  num_loops: 20                          # trunk recycles when caching conditioning
+  backend: ours                          # ours (mol_ensemble_gen.model) | reference
+
+temperature:
+  ref: 379.0                             # centering T (K)
+  scale: 65.0
+  embed_dim: 451                         # must equal c_s_inputs
+  hidden_dim: 256
+  num_fourier: 32
+
+optim:
+  # Flow-tuned, calibrated over two pilots (see OptimConfig for the table):
+  #   clip 1.0  -> 100%  of steps clipped (median norm 8.9)
+  #   clip 20.0 -> 33.6% of steps clipped (median norm 14.6, p85 32.6)
+  #   clip 35.0 -> 13.6% expected            <- current
+  # lr stays at 1e-5: the median norm is below every candidate clip, so raising
+  # the clip changes only the tail, not the median step size.
+  # For scheme: edm instead use lr: 1.0e-4 and grad_clip: 1.0.
+  lr: 1.0e-5
+  weight_decay: 0.01
+  warmup_steps: 200
+  max_steps: 5000                        # pilot: short
+  grad_accum: 4
+  grad_clip: 35.0
+  lr_min_ratio: 0.05
+  scheme: flow                           # "flow" (default) | "edm"
+
+# Flow matching (the default scheme). Reuses the pretrained EDM denoiser via
+# sigma = t/(1-t); the logit-normal draw is shifted by ln(sigma_data) so the noise
+# band matches what the model was pretrained on.
+flow:
+  # Native flow-time conditioning: "add" embeds t directly alongside the
+  # pretrained log-sigma features with a zero-init output, so step 0 is bitwise
+  # the pretrained model. "replace" drops log-sigma entirely (no identity at
+  # init, needs longer training). "off" = pretrained conditioning only.
+  t_conditioning: add
+  time_dist: logitnormal                 # "logitnormal" (ln sigma ~ N) | "uniform"
+  p_mean: -1.2                           # logit-normal mean of ln sigma (matches EDM)
+  p_std: 2.2                             # broadened: p95 sigma 57 -> 179, 3.5% above 256
+  weighting: data                        # unit weight: stops 1/t^2 amplifying the widened low tail
+  t_min: 1.0e-3                          # clamp t in [t_min, 1-t_min]
+  num_sampling_steps: 50                 # ODE integration steps (sampling)
+  sampler: euler                         # "euler" | "heun" (2nd-order)
+  sigma_max: 256.0                        # start noise level (t_max = sigma/(1+sigma))
+
+amp_dtype: bfloat16
+log_every: 20
+ckpt_every: 500
+resume: true
+
+# Experiment tracking (rank 0 only; off by default). Logs loss/mse/sigma/lr/
+# grad_norm every log_every steps. Requires `wandb` (in the training extra) and
+# `wandb login`. The run id defaults to a slug of out_dir so resume continues it.
+wandb:
+  enabled: true
+  project: mol-ensemble-gen
+  # entity: my-team                      # W&B team/user (default account if unset)
+  # run_name: pilot-edm                  # display name (W&B auto-names if unset)
+  tags: [mdcath, finetune]
+  mode: online                           # online | offline | disabled
+
+# ---- FULL RUN: swap the fields below in (multi-GPU / multi-node SLURM) ----
+# Use a domains_file listing all training domains, denser sampling, more steps:
+#
+# data:
+#   domains_file: configs/mdcath_train_domains.txt
+#   skip_frames: 5
+#   frames_per_step: 16
+#   max_len: null
+# optim:
+#   max_steps: 200000
+#   warmup_steps: 2000
+# out_dir: runs/finetune_full
+#
+# slurm:                                 # consumed by `mol-ensemble-gen slurm-train`
+#   job_name: esmfold2-finetune
+#   partition: gpu
+#   nodes: 4
+#   gpus_per_node: 8
+#   cpus_per_task: 32
+#   time: "48:00:00"
+#   env_setup: "source ~/mamba/bin/activate genAI"
