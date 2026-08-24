@@ -255,6 +255,7 @@ class ESMFold2Ensemble:
         spi = StructurePredictionInput(**{k: v for k, v in schema.items() if k in _SPI_FIELDS})
         return self.generate(spi, Path(input_yaml).stem, out_dir)
 
+
 def write_manifest(
     out_dir: str | Path, input_id: str, spec: EnsembleSpec, members: list[EnsembleMember]
 ) -> None:

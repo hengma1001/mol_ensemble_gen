@@ -158,7 +158,7 @@ def test_replace_mode_actually_changes_the_conditioning():
 
 @pytest.mark.unit
 def test_t_head_adds_only_expected_tensors():
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     from mol_ensemble_gen.model.denoiser import DiffusionModule
 
     off = set(DiffusionModule(TINY).state_dict())

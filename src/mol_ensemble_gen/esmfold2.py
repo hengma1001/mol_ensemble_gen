@@ -3,15 +3,9 @@ from pathlib import Path
 
 import yaml
 from esm.models.esmfold2 import (
-    DNAInput,
     ESMFold2InputBuilder,
-    LigandInput,
-    Modification,
-    ProteinInput,
-    RNAInput,
     StructurePredictionInput,
 )
-from esm.utils.structure import input_builder
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 
 from .utils import fasta_to_scheme, update_boltz_schema

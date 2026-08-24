@@ -7,7 +7,6 @@ import json
 import pytest
 
 from mol_ensemble_gen.ensemble import (
-    EnsembleMember,
     EnsembleSpec,
     ESMFold2Ensemble,
     SamplingParams,
