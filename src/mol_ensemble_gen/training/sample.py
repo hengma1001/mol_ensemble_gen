@@ -89,8 +89,7 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
         module.load_state_dict(state["diffusion_module"])  # strict: shapes must match
         model.structure_head.diffusion_module = module
         print(
-            f"[sample] using mol_ensemble_gen denoiser "
-            f"(t_conditioning={t_cond}, {len(trained_keys)} tensors)",
+            f"[sample] using mol_ensemble_gen denoiser " f"(t_conditioning={t_cond}, {len(trained_keys)} tensors)",
             flush=True,
         )
     else:
@@ -109,7 +108,7 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
         temp = holder["T"]
         if temp is not None and "s_inputs" in kwargs:
             s = kwargs["s_inputs"]
-            bias = temp_embedder(temp).to(s.dtype)          # (1, C)
+            bias = temp_embedder(temp).to(s.dtype)  # (1, C)
             tam = kwargs.get("token_attention_mask")
             if tam is not None:
                 kwargs["s_inputs"] = s + bias[:, None, :] * tam.to(s.dtype)[..., None]
@@ -122,9 +121,15 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
             smax = float(smax) if smax is not None else sigma_max_for(flow, temp)
             # head supplies the geometry helpers; head.diffusion_module the network.
             return flow_ode_sample(
-                head.diffusion_module, head, steps=steps, sampler=flow.sampler,
-                sigma_max=smax, t_min=flow.t_min,
-                schedule=flow.schedule, rho=flow.rho, **kwargs,
+                head.diffusion_module,
+                head,
+                steps=steps,
+                sampler=flow.sampler,
+                sigma_max=smax,
+                t_min=flow.t_min,
+                schedule=flow.schedule,
+                rho=flow.rho,
+                **kwargs,
             )
         return original(*args, **kwargs)
 
@@ -181,9 +186,15 @@ def sample_temperatures(
     holder = build_temperature_conditioned_model(checkpoint, device=device)
     return {
         t: sample_at_temperature(
-            checkpoint, input_path, t, out_dir,
-            members=members, base_seed=base_seed, device=device,
-            sampling=sampling, model_holder=holder,
+            checkpoint,
+            input_path,
+            t,
+            out_dir,
+            members=members,
+            base_seed=base_seed,
+            device=device,
+            sampling=sampling,
+            model_holder=holder,
         )
         for t in temperatures
     }

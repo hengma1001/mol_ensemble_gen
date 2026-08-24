@@ -33,9 +33,21 @@ from .config import SIGMA_DATA, TRAIN_NOISE_LOG_MEAN, TRAIN_NOISE_LOG_STD
 # Conditioning tensor names forwarded verbatim to the denoiser (s_inputs is
 # handled separately because temperature is injected into it).
 _PASS_THROUGH = (
-    "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
-    "ref_space_uid", "tok_idx", "s_trunk", "z_trunk", "relative_position_encoding",
-    "asym_id", "residue_index", "entity_id", "token_index", "sym_id",
+    "ref_pos",
+    "ref_charge",
+    "ref_mask",
+    "ref_element",
+    "ref_atom_name_chars",
+    "ref_space_uid",
+    "tok_idx",
+    "s_trunk",
+    "z_trunk",
+    "relative_position_encoding",
+    "asym_id",
+    "residue_index",
+    "entity_id",
+    "token_index",
+    "sym_id",
     "token_attention_mask",
 )
 
@@ -48,11 +60,11 @@ def inject_temperature(conditioning: dict, temp_embedder, temperature: float, dt
     denoiser reproduces the pretrained model.
     """
     s_inputs = conditioning["s_inputs"].to(dtype)
-    bias = temp_embedder(temperature).to(dtype)          # (1, C)
-    gain = temp_embedder.scale(temperature).to(dtype)    # (1, C); exactly 1.0 when film is off
+    bias = temp_embedder(temperature).to(dtype)  # (1, C)
+    gain = temp_embedder.scale(temperature).to(dtype)  # (1, C); exactly 1.0 when film is off
     tam = conditioning.get("token_attention_mask")
     if tam is not None:
-        keep = tam.to(dtype)[..., None]                  # (1, L, 1)
+        keep = tam.to(dtype)[..., None]  # (1, L, 1)
         # Padding tokens keep gain 1 and bias 0, so masking applies to the
         # *deviation* from identity rather than to the gain itself.
         g = 1.0 + (gain[:, None, :] - 1.0) * keep
@@ -76,14 +88,14 @@ def _internal_spread(x, mask, n_probe: int = 192):
     present = mask[0].nonzero(as_tuple=False).reshape(-1)
     if present.numel() < 3:
         return x.new_zeros(())
-    if present.numel() > n_probe:                      # evenly spaced, deterministic
+    if present.numel() > n_probe:  # evenly spaced, deterministic
         sel = torch.linspace(0, present.numel() - 1, n_probe, device=x.device).long()
         present = present[sel]
-    p = x[:, present, :]                                        # (B, K, 3)
-    d = torch.cdist(p, p)                                       # (B, K, K)
+    p = x[:, present, :]  # (B, K, 3)
+    d = torch.cdist(p, p)  # (B, K, K)
     k = d.shape[-1]
     iu = torch.triu_indices(k, k, offset=1, device=x.device)
-    dv = d[:, iu[0], iu[1]]                                     # (B, K(K-1)/2)
+    dv = d[:, iu[0], iu[1]]  # (B, K(K-1)/2)
     b = dv.shape[0]
     if b < 2:
         return x.new_zeros(())
@@ -96,13 +108,13 @@ def _denoise_and_weighted_mse(
     head,
     temp_embedder,
     conditioning: dict,
-    gt_coords,           # (B, n_atoms, 3) float, model atom axis
-    atom_mask,           # (n_atoms,) bool — matched model atoms
+    gt_coords,  # (B, n_atoms, 3) float, model atom axis
+    atom_mask,  # (n_atoms,) bool — matched model atoms
     temperature: float,
-    sigma,               # (B,) per-frame noise level σ
-    weight,              # (B,) per-frame loss weight
+    sigma,  # (B,) per-frame noise level σ
+    weight,  # (B,) per-frame loss weight
     generator=None,
-    flow_t=None,         # (B,) flow path time, for native-t conditioning
+    flow_t=None,  # (B,) flow path time, for native-t conditioning
     spread_weight: float = 0.0,
     spread_atoms: int = 192,
     spread_sigma_max: float = 8.0,
@@ -134,7 +146,7 @@ def _denoise_and_weighted_mse(
 
     device = gt_coords.device
     b = gt_coords.shape[0]
-    x0 = gt_coords.to(torch.float32)                             # (B, N, 3)
+    x0 = gt_coords.to(torch.float32)  # (B, N, 3)
     mask = atom_mask.to(torch.float32).to(device)[None, :].expand(b, -1)  # (B, N)
 
     # Center + random rotation/translation augmentation of the ground truth.
@@ -158,13 +170,13 @@ def _denoise_and_weighted_mse(
         x_noisy=x_noisy,
         t_hat=sigma,
         s_inputs=s_inputs,
-        num_diffusion_samples=b,      # broadcast batch-1 conditioning to B frames
+        num_diffusion_samples=b,  # broadcast batch-1 conditioning to B frames
         return_token_repr=False,
         return_atom_repr=False,
         inference_cache=None,
         **kwargs,
     )
-    x_denoised = out["x_denoised"].to(torch.float32)               # (B, N, 3)
+    x_denoised = out["x_denoised"].to(torch.float32)  # (B, N, 3)
 
     # Alignment (Kabsch SVD/det) and the coordinate loss must run in fp32 with
     # autocast off: under bf16 autocast the align's matmuls downcast and
@@ -173,7 +185,7 @@ def _denoise_and_weighted_mse(
     with torch.autocast(device_type=device.type, enabled=False):
         # Align GT onto the prediction (fp32 Kabsch) before the coordinate loss.
         x0_aligned = head._weighted_rigid_align(x0, x_denoised, mask, mask)
-        sq_err = ((x_denoised - x0_aligned) ** 2).sum(-1)             # (B, N)
+        sq_err = ((x_denoised - x0_aligned) ** 2).sum(-1)  # (B, N)
         per_frame = (sq_err * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)
         loss = (weight.to(torch.float32) * per_frame).mean()
 
@@ -205,8 +217,8 @@ def edm_diffusion_loss(
     head,
     temp_embedder,
     conditioning: dict,
-    gt_coords,           # (B, n_atoms, 3) float, model atom axis
-    atom_mask,           # (n_atoms,) bool — matched model atoms
+    gt_coords,  # (B, n_atoms, 3) float, model atom axis
+    atom_mask,  # (n_atoms,) bool — matched model atoms
     temperature: float,
     *,
     sigma_data: float = SIGMA_DATA,
@@ -227,13 +239,22 @@ def edm_diffusion_loss(
     log_sigma = p_mean + p_std * torch.randn(n_draw, device=device, generator=generator)
     if shared_sigma:
         log_sigma = log_sigma.expand(b)
-    sigma = (sigma_data * torch.exp(log_sigma)).to(torch.float32)   # (B,)
-    lam = (sigma**2 + sigma_data**2) / (sigma * sigma_data) ** 2    # (B,)
+    sigma = (sigma_data * torch.exp(log_sigma)).to(torch.float32)  # (B,)
+    lam = (sigma**2 + sigma_data**2) / (sigma * sigma_data) ** 2  # (B,)
 
     loss, per_frame, extra = _denoise_and_weighted_mse(
-        diffusion_module, head, temp_embedder, conditioning,
-        gt_coords, atom_mask, temperature, sigma, lam, generator=generator,
-        spread_weight=spread_weight, spread_atoms=spread_atoms,
+        diffusion_module,
+        head,
+        temp_embedder,
+        conditioning,
+        gt_coords,
+        atom_mask,
+        temperature,
+        sigma,
+        lam,
+        generator=generator,
+        spread_weight=spread_weight,
+        spread_atoms=spread_atoms,
         spread_sigma_max=spread_sigma_max,
     )
     return loss, {"sigma_mean": float(sigma.mean()), "mse": float(per_frame.mean()), **extra}
@@ -301,10 +322,19 @@ def flow_matching_loss(
         weight = 1.0 / (t * t)
 
     loss, per_frame, extra = _denoise_and_weighted_mse(
-        diffusion_module, head, temp_embedder, conditioning,
-        gt_coords, atom_mask, temperature, sigma, weight,
-        generator=generator, flow_t=t,
-        spread_weight=spread_weight, spread_atoms=spread_atoms,
+        diffusion_module,
+        head,
+        temp_embedder,
+        conditioning,
+        gt_coords,
+        atom_mask,
+        temperature,
+        sigma,
+        weight,
+        generator=generator,
+        flow_t=t,
+        spread_weight=spread_weight,
+        spread_atoms=spread_atoms,
         spread_sigma_max=spread_sigma_max,
     )
     return loss, {
@@ -335,8 +365,10 @@ def diffusion_loss(scheme: str, *args, flow=None, spread=None, **kwargs):
         fkw = {}
         if flow is not None:
             fkw = dict(
-                p_mean=flow.p_mean, p_std=flow.p_std,
-                time_dist=flow.time_dist, weighting=flow.weighting,
+                p_mean=flow.p_mean,
+                p_std=flow.p_std,
+                time_dist=flow.time_dist,
+                weighting=flow.weighting,
                 t_min=flow.t_min,
             )
         fkw.update(kwargs)

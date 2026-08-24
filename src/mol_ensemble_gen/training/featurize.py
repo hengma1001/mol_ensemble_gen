@@ -33,10 +33,23 @@ _FLOAT_KEYS = {"ref_pos", "s_inputs", "z_trunk", "relative_position_encoding"}
 # The exact kwargs structure_head.sample forwards to the denoiser (all
 # sequence-derived, x/t/T-independent). s_trunk is None for ESMFold2.
 _CONDITIONING_KEYS = (
-    "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
-    "ref_space_uid", "tok_idx", "s_inputs", "s_trunk", "z_trunk",
-    "relative_position_encoding", "asym_id", "residue_index", "entity_id",
-    "token_index", "sym_id", "token_attention_mask",
+    "ref_pos",
+    "ref_charge",
+    "ref_mask",
+    "ref_element",
+    "ref_atom_name_chars",
+    "ref_space_uid",
+    "tok_idx",
+    "s_inputs",
+    "s_trunk",
+    "z_trunk",
+    "relative_position_encoding",
+    "asym_id",
+    "residue_index",
+    "entity_id",
+    "token_index",
+    "sym_id",
+    "token_attention_mask",
 )
 
 
@@ -75,8 +88,7 @@ def _capture_conditioning(model, builder, spi, num_loops: int) -> dict:
 
     head.sample = _spy
     try:
-        builder.fold(model, spi, seed=0, num_loops=num_loops, num_sampling_steps=1,
-                     num_diffusion_samples=1)
+        builder.fold(model, spi, seed=0, num_loops=num_loops, num_sampling_steps=1, num_diffusion_samples=1)
     except _CaptureDone:
         pass
     except Exception:
@@ -210,8 +222,7 @@ def featurize_domain(
 
     amap = build_atom_map(topo.sequence, topo.md_records)
     if amap.matched_fraction < min_matched_fraction:
-        return {"domain": domain, "status": "dropped",
-                "matched_fraction": amap.matched_fraction, "length": length}
+        return {"domain": domain, "status": "dropped", "matched_fraction": amap.matched_fraction, "length": length}
 
     spi = _protein_spi(topo.sequence)
     with torch.no_grad():
@@ -274,7 +285,9 @@ def featurize_all(cfg, *, overwrite: bool = False, verbose: bool = True) -> list
             res = {"domain": domain, "status": "error", "error": repr(exc)}
         results.append(res)
         if verbose:
-            print(f"[featurize {i + 1}/{len(domains)}] {domain}: {res['status']}"
-                  + (f" ({res.get('matched_fraction'):.3f})" if "matched_fraction" in res else ""),
-                  flush=True)
+            print(
+                f"[featurize {i + 1}/{len(domains)}] {domain}: {res['status']}"
+                + (f" ({res.get('matched_fraction'):.3f})" if "matched_fraction" in res else ""),
+                flush=True,
+            )
     return results

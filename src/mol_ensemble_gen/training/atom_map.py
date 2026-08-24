@@ -21,20 +21,43 @@ import numpy as np
 # One-letter → three-letter for the 20 standard amino acids. Anything else maps
 # to UNK (backbone-only in PROTEIN_HEAVY_ATOMS).
 PROTEIN_1TO3: dict[str, str] = {
-    "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
-    "Q": "GLN", "E": "GLU", "G": "GLY", "H": "HIS", "I": "ILE",
-    "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
-    "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL",
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "Q": "GLN",
+    "E": "GLU",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
 }
 
 # Non-standard / MD force-field residue names → their canonical parent. mdCATH is
 # classical FF, so protonation-state variants of HIS and modified residues appear.
 _RESNAME_CANON: dict[str, str] = {
-    "MSE": "MET",                                     # selenomethionine
-    "HSD": "HIS", "HSE": "HIS", "HSP": "HIS",         # CHARMM HIS states
-    "HID": "HIS", "HIE": "HIS", "HIP": "HIS",         # AMBER HIS states
-    "CYX": "CYS", "CYM": "CYS",                       # disulfide / deprotonated CYS
-    "LYN": "LYS", "ASH": "ASP", "GLH": "GLU",         # alt protonation
+    "MSE": "MET",  # selenomethionine
+    "HSD": "HIS",
+    "HSE": "HIS",
+    "HSP": "HIS",  # CHARMM HIS states
+    "HID": "HIS",
+    "HIE": "HIS",
+    "HIP": "HIS",  # AMBER HIS states
+    "CYX": "CYS",
+    "CYM": "CYS",  # disulfide / deprotonated CYS
+    "LYN": "LYS",
+    "ASH": "ASP",
+    "GLH": "GLU",  # alt protonation
     "ARN": "ARG",
 }
 
@@ -67,9 +90,7 @@ def load_heavy_atom_table() -> dict[str, list[str]]:
     return {k: list(v) for k, v in PROTEIN_HEAVY_ATOMS.items()}
 
 
-def build_model_atom_layout(
-    sequence: str, *, heavy_atoms: dict[str, list[str]] | None = None
-) -> list[tuple[int, str]]:
+def build_model_atom_layout(sequence: str, *, heavy_atoms: dict[str, list[str]] | None = None) -> list[tuple[int, str]]:
     """Ordered ``(res_idx, atom_name)`` for every real model atom slot.
 
     Matches ``tokenize_protein``: residues in sequence order, atoms in
@@ -94,11 +115,11 @@ class AtomMap:
     Apply per frame with :meth:`scatter`: ``gt[slot_index] = heavy[gather_md_row]``.
     """
 
-    num_slots: int                 # real model atom count (== len(layout))
-    gather_md_row: np.ndarray      # (K,) mdCATH heavy-atom rows that matched a slot
-    slot_index: np.ndarray         # (K,) model slot each matched row fills
-    present_mask: np.ndarray       # (num_slots,) bool: slot got an MD coordinate
-    n_md_heavy: int                # heavy-atom count read from the MD topology
+    num_slots: int  # real model atom count (== len(layout))
+    gather_md_row: np.ndarray  # (K,) mdCATH heavy-atom rows that matched a slot
+    slot_index: np.ndarray  # (K,) model slot each matched row fills
+    present_mask: np.ndarray  # (num_slots,) bool: slot got an MD coordinate
+    n_md_heavy: int  # heavy-atom count read from the MD topology
     # Indices of heavy atoms into the full trajectory atom axis. Populated at
     # featurization time (from the topology) so the streaming dataset can select
     # heavy coords with a single fancy-index before scattering.
@@ -116,9 +137,7 @@ class AtomMap:
         slots are left at zero and masked False (callers must not put them in the loss).
         """
         if heavy_coords.shape[0] != self.n_md_heavy:
-            raise ValueError(
-                f"frame has {heavy_coords.shape[0]} heavy atoms, map expects {self.n_md_heavy}"
-            )
+            raise ValueError(f"frame has {heavy_coords.shape[0]} heavy atoms, map expects {self.n_md_heavy}")
         gt = np.zeros((self.num_slots, 3), dtype=np.float32)
         gt[self.slot_index] = heavy_coords[self.gather_md_row]
         return gt, self.present_mask.copy()
@@ -129,9 +148,7 @@ class AtomMap:
         Unmatched slots are left at zero; use :attr:`present_mask` for the loss mask.
         """
         if heavy_coords.ndim != 3 or heavy_coords.shape[1] != self.n_md_heavy:
-            raise ValueError(
-                f"expected (B, {self.n_md_heavy}, 3), got {tuple(heavy_coords.shape)}"
-            )
+            raise ValueError(f"expected (B, {self.n_md_heavy}, 3), got {tuple(heavy_coords.shape)}")
         b = heavy_coords.shape[0]
         gt = np.zeros((b, self.num_slots, 3), dtype=np.float32)
         gt[:, self.slot_index] = heavy_coords[:, self.gather_md_row]

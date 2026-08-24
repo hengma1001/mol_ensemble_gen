@@ -76,7 +76,7 @@ def pca(coords: np.ndarray, n_components: int = 2) -> tuple[np.ndarray, np.ndarr
     centered = flat - flat.mean(0)
     u, s, _ = np.linalg.svd(centered, full_matrices=False)
     proj = u[:, :k] * s[:k]
-    var = (s ** 2) / (s ** 2).sum() if s.sum() else np.zeros_like(s)
+    var = (s**2) / (s**2).sum() if s.sum() else np.zeros_like(s)
     return proj, var[:k]
 
 
@@ -85,8 +85,7 @@ def pca(coords: np.ndarray, n_components: int = 2) -> tuple[np.ndarray, np.ndarr
 # ---------------------------------------------------------------------------
 
 
-def cluster(rmsd_matrix: np.ndarray, *, cutoff: float | None = 2.0,
-            n_clusters: int | None = None) -> np.ndarray:
+def cluster(rmsd_matrix: np.ndarray, *, cutoff: float | None = 2.0, n_clusters: int | None = None) -> np.ndarray:
     """Average-linkage hierarchical clustering on an RMSD matrix.
 
     Provide either ``cutoff`` (RMSD in Å) or ``n_clusters``. Returns 1-based
@@ -119,8 +118,9 @@ def representatives(rmsd_matrix: np.ndarray, labels: np.ndarray) -> dict[int, in
 # ---------------------------------------------------------------------------
 
 
-def confidence_filter(df: pd.DataFrame, *, min_plddt: float = 0.0,
-                      min_ptm: float = 0.0, min_iptm: float | None = None) -> pd.DataFrame:
+def confidence_filter(
+    df: pd.DataFrame, *, min_plddt: float = 0.0, min_ptm: float = 0.0, min_iptm: float | None = None
+) -> pd.DataFrame:
     """Keep only members passing confidence thresholds."""
     keep = df["plddt"] >= min_plddt
     if "ptm" in df:
@@ -137,7 +137,7 @@ def confidence_filter(df: pd.DataFrame, *, min_plddt: float = 0.0,
 
 @dataclass
 class EnsembleAnalysis:
-    metadata: pd.DataFrame        # with a 'cluster' column added
+    metadata: pd.DataFrame  # with a 'cluster' column added
     rmsd_matrix: np.ndarray
     rmsf: np.ndarray
     pca_proj: np.ndarray
@@ -156,8 +156,7 @@ class EnsembleAnalysis:
             "mean_plddt": float(self.metadata["plddt"].mean()),
             "max_rmsf": float(self.rmsf.max()),
             "pca_explained_variance": [float(v) for v in self.pca_var],
-            "representatives": {str(k): self.metadata.iloc[v]["cif_path"]
-                                for k, v in self.representatives.items()},
+            "representatives": {str(k): self.metadata.iloc[v]["cif_path"] for k, v in self.representatives.items()},
         }
 
 
@@ -166,15 +165,23 @@ def load_coords(metadata: pd.DataFrame, chain: str | None = None) -> np.ndarray:
     coords = [ca_coords(parse_cif_atoms(p), chain)[1] for p in metadata["cif_path"]]
     lengths = {len(c) for c in coords}
     if len(lengths) != 1:
-        raise ValueError(f"members have differing Cα counts {sorted(lengths)}; "
-                         "pass chain= or ensure a consistent sequence")
+        raise ValueError(
+            f"members have differing Cα counts {sorted(lengths)}; " "pass chain= or ensure a consistent sequence"
+        )
     return np.stack(coords)
 
 
-def analyze_run(out_dir: str | Path, *, min_plddt: float = 0.0, min_ptm: float = 0.0,
-                min_iptm: float | None = None, cluster_cutoff: float = 2.0,
-                n_clusters: int | None = None, chain: str | None = None,
-                write: bool = True) -> EnsembleAnalysis:
+def analyze_run(
+    out_dir: str | Path,
+    *,
+    min_plddt: float = 0.0,
+    min_ptm: float = 0.0,
+    min_iptm: float | None = None,
+    cluster_cutoff: float = 2.0,
+    n_clusters: int | None = None,
+    chain: str | None = None,
+    write: bool = True,
+) -> EnsembleAnalysis:
     """Analyze an ensemble directory and (optionally) write result files."""
     out_dir = Path(out_dir)
     df = pd.read_csv(out_dir / "metadata.csv")
@@ -195,10 +202,10 @@ def analyze_run(out_dir: str | Path, *, min_plddt: float = 0.0, min_ptm: float =
     if write:
         np.save(out_dir / "rmsd_matrix.npy", mat)
         df.to_csv(out_dir / "analysis_metadata.csv", index=False)
-        pd.DataFrame(proj, columns=[f"PC{i + 1}" for i in range(proj.shape[1])]) \
-            .assign(cluster=labels).to_csv(out_dir / "pca.csv", index=False)
-        pd.DataFrame({"residue": np.arange(1, len(flu) + 1), "rmsf": flu}) \
-            .to_csv(out_dir / "rmsf.csv", index=False)
+        pd.DataFrame(proj, columns=[f"PC{i + 1}" for i in range(proj.shape[1])]).assign(cluster=labels).to_csv(
+            out_dir / "pca.csv", index=False
+        )
+        pd.DataFrame({"residue": np.arange(1, len(flu) + 1), "rmsf": flu}).to_csv(out_dir / "rmsf.csv", index=False)
         (out_dir / "analysis_summary.json").write_text(json.dumps(result.summary, indent=2))
 
     return result

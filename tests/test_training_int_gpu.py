@@ -46,7 +46,7 @@ def test_edm_loss_and_gradients_on_real_denoiser():
     for key, val in captured.items():
         conditioning[key] = val.to(device) if torch.is_tensor(val) else val
 
-    ref_mask = conditioning["ref_mask"].bool().reshape(-1)          # (n_atoms,)
+    ref_mask = conditioning["ref_mask"].bool().reshape(-1)  # (n_atoms,)
     ref_pos = conditioning["ref_pos"].to(torch.float32).reshape(1, -1, 3)
     n_atoms = ref_pos.shape[1]
     assert ref_mask.shape[0] == n_atoms
@@ -107,9 +107,7 @@ def _capture_flow_fixture(device):
     model = ESMFold2Model.from_pretrained("biohub/ESMFold2").to(device).eval()
     builder = ESMFold2InputBuilder()
     captured = _capture_conditioning(model, builder, _protein_spi(SEQUENCE), num_loops=4)
-    conditioning = {
-        k: (v.to(device) if torch.is_tensor(v) else v) for k, v in captured.items()
-    }
+    conditioning = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in captured.items()}
     temp_embedder = build_temperature_embedder(TemperatureConfig()).to(device)
     return model, conditioning, temp_embedder
 
@@ -141,8 +139,14 @@ def test_flow_loss_and_gradients_on_real_denoiser():
     gen = torch.Generator(device=device).manual_seed(0)
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         loss, metrics = flow_matching_loss(
-            diffusion_module, head, temp_embedder, conditioning,
-            gt_coords, ref_mask, temperature=379.0, generator=gen,
+            diffusion_module,
+            head,
+            temp_embedder,
+            conditioning,
+            gt_coords,
+            ref_mask,
+            temperature=379.0,
+            generator=gen,
         )
 
     assert torch.isfinite(loss) and loss.item() >= 0.0
@@ -159,8 +163,16 @@ def test_flow_loss_and_gradients_on_real_denoiser():
     gen2 = torch.Generator(device=device).manual_seed(0)
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         loss2, _ = diffusion_loss(
-            "flow", diffusion_module, head, temp_embedder, conditioning,
-            gt_coords, ref_mask, temperature=379.0, generator=gen2, flow=FlowConfig(),
+            "flow",
+            diffusion_module,
+            head,
+            temp_embedder,
+            conditioning,
+            gt_coords,
+            ref_mask,
+            temperature=379.0,
+            generator=gen2,
+            flow=FlowConfig(),
         )
     assert torch.isfinite(loss2)
 
@@ -186,8 +198,13 @@ def test_flow_ode_sample_produces_finite_coords():
     gen = torch.Generator(device=device).manual_seed(0)
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         out = flow_ode_sample(
-            head.diffusion_module, head, steps=5, sampler="euler", sigma_max=256.0,
-            generator=gen, **conditioning,
+            head.diffusion_module,
+            head,
+            steps=5,
+            sampler="euler",
+            sigma_max=256.0,
+            generator=gen,
+            **conditioning,
         )
 
     x = out["sample_atom_coords"]
@@ -199,7 +216,12 @@ def test_flow_ode_sample_produces_finite_coords():
     gen2 = torch.Generator(device=device).manual_seed(0)
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         out_h = flow_ode_sample(
-            head.diffusion_module, head, steps=3, sampler="heun", sigma_max=256.0,
-            generator=gen2, **conditioning_h,
+            head.diffusion_module,
+            head,
+            steps=3,
+            sampler="heun",
+            sigma_max=256.0,
+            generator=gen2,
+            **conditioning_h,
         )
     assert torch.isfinite(out_h["sample_atom_coords"]).all()

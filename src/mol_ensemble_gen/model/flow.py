@@ -93,11 +93,7 @@ def sample_flow_time(
     if time_dist == "uniform":
         t = torch.rand(batch, device=device, generator=generator)
     elif time_dist == "logitnormal":
-        log_sigma = (
-            math.log(sigma_data)
-            + p_mean
-            + p_std * torch.randn(batch, device=device, generator=generator)
-        )
+        log_sigma = math.log(sigma_data) + p_mean + p_std * torch.randn(batch, device=device, generator=generator)
         t = torch.sigmoid(log_sigma)
     else:
         raise ValueError(f"unknown time_dist {time_dist!r} (expected 'logitnormal' or 'uniform')")
@@ -165,10 +161,23 @@ class FlowDenoiser:
 #: Conditioning kwargs forwarded verbatim to the denoiser inside the ODE loop.
 #: ``x_noisy``/``t_hat``/``num_diffusion_samples`` are supplied per step.
 _DENOISER_KEYS = (
-    "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
-    "ref_space_uid", "tok_idx", "s_inputs", "s_trunk", "z_trunk",
-    "relative_position_encoding", "asym_id", "residue_index", "entity_id",
-    "token_index", "sym_id", "token_attention_mask",
+    "ref_pos",
+    "ref_charge",
+    "ref_mask",
+    "ref_element",
+    "ref_atom_name_chars",
+    "ref_space_uid",
+    "tok_idx",
+    "s_inputs",
+    "s_trunk",
+    "z_trunk",
+    "relative_position_encoding",
+    "asym_id",
+    "residue_index",
+    "entity_id",
+    "token_index",
+    "sym_id",
+    "token_attention_mask",
 )
 
 
@@ -243,16 +252,14 @@ def flow_ode_sample(
     sigma_min = t_min / (1.0 - t_min)
     if schedule == "karras":
         i = torch.arange(steps + 1, device=device, dtype=torch.float32) / max(1, steps)
-        sigmas = (
-            sigma_max ** (1.0 / rho) + i * (sigma_min ** (1.0 / rho) - sigma_max ** (1.0 / rho))
-        ) ** rho
+        sigmas = (sigma_max ** (1.0 / rho) + i * (sigma_min ** (1.0 / rho) - sigma_max ** (1.0 / rho))) ** rho
     elif schedule == "uniform_t":
         t_max = sigma_max / (1.0 + sigma_max)
         ts = torch.linspace(t_max, t_min, steps + 1, device=device, dtype=torch.float32)
         sigmas = ts / (1.0 - ts)
     else:
         raise ValueError(f"unknown schedule {schedule!r} (expected 'karras' or 'uniform_t')")
-    ts = sigmas / (1.0 + sigmas)          # flow times, for native-t conditioning
+    ts = sigmas / (1.0 + sigmas)  # flow times, for native-t conditioning
 
     kwargs = {k: conditioning.get(k) for k in _DENOISER_KEYS}
     supports_flow_t = bool(getattr(denoiser, "supports_flow_time", False))
@@ -261,9 +268,7 @@ def flow_ode_sample(
     def _denoise(x, sigma_val, t_val):
         extra = {}
         if supports_flow_t:
-            extra["flow_t"] = torch.full(
-                (target_batch,), t_val, device=device, dtype=torch.float32
-            )
+            extra["flow_t"] = torch.full((target_batch,), t_val, device=device, dtype=torch.float32)
         out = denoiser(
             x_noisy=x,
             t_hat=torch.full((target_batch,), sigma_val, device=device, dtype=torch.float32),
@@ -279,9 +284,7 @@ def flow_ode_sample(
     def _align(x, target):
         # SVD/det have no bf16 kernel, so force fp32 with autocast off.
         with torch.autocast(device_type=device.type, enabled=False):
-            return geometry._weighted_rigid_align(
-                x.float(), target.float(), atom_mask, atom_mask
-            )
+            return geometry._weighted_rigid_align(x.float(), target.float(), atom_mask, atom_mask)
 
     x = float(sigmas[0]) * torch.randn(
         target_batch, n_atoms, 3, device=device, dtype=torch.float32, generator=generator
@@ -300,7 +303,7 @@ def flow_ode_sample(
         x_denoised, token_repr = _denoise(x, sigma, t_now)
         x = _align(x, x_denoised).to(x_denoised.dtype)
 
-        d = (x - x_denoised) / sigma                      # score direction
+        d = (x - x_denoised) / sigma  # score direction
         x_euler = x + (sigma_next - sigma) * d
 
         if sampler == "heun" and sigma_next > 0.0:

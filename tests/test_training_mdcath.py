@@ -47,8 +47,15 @@ def test_parse_topology_strips_h_and_terminal():
     assert topo.n_atoms == 11
     # heavy atoms only: HA (row 5) and OXT (row 10) dropped
     assert topo.md_records == [
-        (0, "N"), (0, "CA"), (0, "C"), (0, "O"), (0, "CB"),
-        (1, "N"), (1, "CA"), (1, "C"), (1, "O"),
+        (0, "N"),
+        (0, "CA"),
+        (0, "C"),
+        (0, "O"),
+        (0, "CB"),
+        (1, "N"),
+        (1, "CA"),
+        (1, "C"),
+        (1, "O"),
     ]
     assert topo.heavy_indices.tolist() == [0, 1, 2, 3, 4, 6, 7, 8, 9]
 
@@ -93,8 +100,15 @@ def test_dataset_streams_scattered_frames(tmp_path):
 
     # Build + persist a matching atom map; heavy atoms are the first 9 rows.
     md_records = [
-        (0, "N"), (0, "CA"), (0, "C"), (0, "O"), (0, "CB"),
-        (1, "N"), (1, "CA"), (1, "C"), (1, "O"),
+        (0, "N"),
+        (0, "CA"),
+        (0, "C"),
+        (0, "O"),
+        (0, "CB"),
+        (1, "N"),
+        (1, "CA"),
+        (1, "C"),
+        (1, "O"),
     ]
     amap = build_atom_map("AG", md_records, heavy_atoms=FAKE_TABLE)
     amap = dataclasses.replace(amap, heavy_indices=np.arange(9, dtype=np.int64))
@@ -147,7 +161,7 @@ def test_make_dataset_builds_the_lazy_class(tmp_path):
                 "temperatures": [320],
                 "frames_per_step": 4,
             }
-        }
+        },
     )
     ds = mdcath.make_dataset(cfg, rank=0, world_size=1)
     assert ds.domains == ["aA00"]

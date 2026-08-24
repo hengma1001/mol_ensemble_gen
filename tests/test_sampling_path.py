@@ -53,9 +53,7 @@ def test_replace_mode_is_preserved():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "backend,expect_ours", [("ours", True), ("reference", False)]
-)
+@pytest.mark.parametrize("backend,expect_ours", [("ours", True), ("reference", False)])
 def test_plain_checkpoint_follows_the_configured_backend(backend, expect_ours):
     use_ours, t_cond = plan_denoiser(EDM_KEYS, backend, "add")
     assert use_ours is expect_ours
@@ -101,9 +99,7 @@ def test_sample_at_temperature_writes_usable_structures(ckpt, tmp_path):
     fasta = tmp_path / "d.fasta"
     fasta.write_text(f">A\n{seq}\n")
 
-    members = sample_at_temperature(
-        ckpt, fasta, 320.0, tmp_path / "out", members=1, base_seed=0, device="cuda"
-    )
+    members = sample_at_temperature(ckpt, fasta, 320.0, tmp_path / "out", members=1, base_seed=0, device="cuda")
     assert len(members) == 1
 
     atoms = parse_cif_atoms(members[0].cif_path)

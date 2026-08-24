@@ -45,9 +45,7 @@ def test_sample_flow_time_matches_edm_band():
 
     g = torch.Generator().manual_seed(0)
     t, sigma = sample_flow_time(200_000, time_dist="logitnormal", generator=g)
-    assert sigma.median().item() == pytest.approx(
-        SIGMA_DATA * math.exp(TRAIN_NOISE_LOG_MEAN), rel=0.02
-    )
+    assert sigma.median().item() == pytest.approx(SIGMA_DATA * math.exp(TRAIN_NOISE_LOG_MEAN), rel=0.02)
     # σ and t must stay mutually consistent element-wise.
     torch.testing.assert_close(t_to_sigma(t), sigma, rtol=1e-5, atol=1e-6)
     assert (t > 0).all() and (t < 1).all()
@@ -129,9 +127,7 @@ def test_add_mode_is_bitwise_identical_to_pretrained_at_init():
     t = torch.tensor([0.4, 0.85])
     with torch.no_grad():
         a = off(x_noisy=x, t_hat=t_to_sigma(t), num_diffusion_samples=2, **cond)["x_denoised"]
-        b = add(
-            x_noisy=x, t_hat=t_to_sigma(t), num_diffusion_samples=2, flow_t=t, **cond
-        )["x_denoised"]
+        b = add(x_noisy=x, t_hat=t_to_sigma(t), num_diffusion_samples=2, flow_t=t, **cond)["x_denoised"]
     assert torch.equal(a, b)
 
 
@@ -150,9 +146,7 @@ def test_replace_mode_actually_changes_the_conditioning():
     t = torch.tensor([0.5])
     with torch.no_grad():
         a = off(x_noisy=x, t_hat=t_to_sigma(t), num_diffusion_samples=1, **cond)["x_denoised"]
-        c = rep(
-            x_noisy=x, t_hat=t_to_sigma(t), num_diffusion_samples=1, flow_t=t, **cond
-        )["x_denoised"]
+        c = rep(x_noisy=x, t_hat=t_to_sigma(t), num_diffusion_samples=1, flow_t=t, **cond)["x_denoised"]
     assert not torch.allclose(a, c)
 
 
@@ -209,12 +203,10 @@ def test_flow_ode_sample_is_deterministic_and_finite(sampler):
     cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
     n_atoms = cond["tok_idx"].shape[1]
 
-    torch.manual_seed(11)   # _center_random_augmentation draws from global RNG
-    a = flow_ode_sample(model, geo, steps=3, sampler=sampler,
-                        generator=torch.Generator().manual_seed(5), **cond)
+    torch.manual_seed(11)  # _center_random_augmentation draws from global RNG
+    a = flow_ode_sample(model, geo, steps=3, sampler=sampler, generator=torch.Generator().manual_seed(5), **cond)
     torch.manual_seed(11)
-    b = flow_ode_sample(model, geo, steps=3, sampler=sampler,
-                        generator=torch.Generator().manual_seed(5), **cond)
+    b = flow_ode_sample(model, geo, steps=3, sampler=sampler, generator=torch.Generator().manual_seed(5), **cond)
 
     x = a["sample_atom_coords"]
     assert x.shape == (1, n_atoms, 3)
@@ -241,8 +233,9 @@ def test_flow_ode_sample_stays_bounded_over_a_full_schedule():
     model = DiffusionModule(TINY).eval()
     cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
     torch.manual_seed(3)
-    out = flow_ode_sample(model, GeometryOps(), steps=50, sampler="euler",
-                          generator=torch.Generator().manual_seed(1), **cond)
+    out = flow_ode_sample(
+        model, GeometryOps(), steps=50, sampler="euler", generator=torch.Generator().manual_seed(1), **cond
+    )
     x = out["sample_atom_coords"]
     assert torch.isfinite(x).all()
     # A collapsing or exploding integrator fails this; a plausible structure does
@@ -383,8 +376,16 @@ def test_schedule_spans_the_same_endpoints(schedule):
     model.forward = spy
     cond = {**_tiny_inputs(torch), "num_diffusion_samples": 1}
     torch.manual_seed(0)
-    flow_ode_sample(model, GeometryOps(), steps=8, sampler="euler", sigma_max=256.0,
-                    schedule=schedule, generator=torch.Generator().manual_seed(0), **cond)
+    flow_ode_sample(
+        model,
+        GeometryOps(),
+        steps=8,
+        sampler="euler",
+        sigma_max=256.0,
+        schedule=schedule,
+        generator=torch.Generator().manual_seed(0),
+        **cond,
+    )
     assert seen[0] == pytest.approx(256.0, rel=1e-3), "must start at sigma_max"
     assert seen == sorted(seen, reverse=True), "sigma must decrease monotonically"
 
@@ -409,7 +410,7 @@ def test_karras_spends_more_steps_at_high_sigma_than_uniform_t():
         t = torch.linspace(smax / (1 + smax), t_min, steps + 1)
         return t / (1 - t)
 
-    P95 = 56.8          # training sigma p95 for the configured logit-normal draw
+    P95 = 56.8  # training sigma p95 for the configured logit-normal draw
     n_uniform = int((grid("uniform_t") > P95).sum())
     n_karras = int((grid("karras") > P95).sum())
     assert n_uniform == 1, n_uniform

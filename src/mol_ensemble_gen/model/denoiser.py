@@ -104,9 +104,7 @@ class DenoiserConfig:
 
     def __post_init__(self) -> None:
         if self.t_conditioning not in ("off", "add", "replace"):
-            raise ValueError(
-                f"t_conditioning must be 'off', 'add' or 'replace', got {self.t_conditioning!r}"
-            )
+            raise ValueError(f"t_conditioning must be 'off', 'add' or 'replace', got {self.t_conditioning!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +181,7 @@ def build_3d_rope(
         ** (torch.arange(0, n_spatial_per_axis, dtype=torch.float32, device=device) / n_spatial_per_axis)
     )
     uid_inv_freq = 1.0 / (
-        uid_base_freq
-        ** (torch.arange(0, n_uid_pairs, dtype=torch.float32, device=device) / n_uid_pairs)
+        uid_base_freq ** (torch.arange(0, n_uid_pairs, dtype=torch.float32, device=device) / n_uid_pairs)
     )
 
     spatial_freqs = torch.einsum("bna,k->bnak", ref_pos.float(), spatial_inv_freq)
@@ -533,9 +530,7 @@ class ESMFold2AtomEncoder(nn.Module):
                 layer_cache["attention_params"] = attention_params
                 layer_cache["mask_exp"] = mask_exp
                 layer_cache["n_tokens"] = n_tokens
-                layer_cache["atom_to_token_exp"] = atom_to_token.repeat_interleave(
-                    num_diffusion_samples, 0
-                )
+                layer_cache["atom_to_token_exp"] = atom_to_token.repeat_interleave(num_diffusion_samples, 0)
         else:
             c_base = layer_cache["c_base"]
             attention_params = layer_cache["attention_params"]
@@ -694,11 +689,7 @@ class AttentionPairBias(nn.Module):
         # z is never materialized per sample upstream of this call.
         if z.dim() == 4 and z.shape[0] != bsz and num_diffusion_samples > 1:
             z = z.repeat_interleave(num_diffusion_samples, dim=0)
-        if (
-            attention_mask is not None
-            and attention_mask.shape[0] != bsz
-            and num_diffusion_samples > 1
-        ):
+        if attention_mask is not None and attention_mask.shape[0] != bsz and num_diffusion_samples > 1:
             attention_mask = attention_mask.repeat_interleave(num_diffusion_samples, dim=0)
 
         g = torch.sigmoid(self.g_proj(x)).view(bsz, n_queries, self.num_heads, self.head_dim)
@@ -807,7 +798,10 @@ class DiffusionTransformer(nn.Module):
         x = a
         for attn, transition in zip(self.attn_blocks, self.transition_blocks):
             x = x + attn(
-                x, s, z, beta,
+                x,
+                s,
+                z,
+                beta,
                 attention_mask=attention_mask,
                 num_diffusion_samples=num_diffusion_samples,
             )
@@ -1087,7 +1081,10 @@ class DiffusionModule(nn.Module):
 
         a = a + self.s_to_token(self.s_step_norm(s))
         a, _ = self.token_transformer(
-            a, s, z, beta=0.0,
+            a,
+            s,
+            z,
+            beta=0.0,
             attention_mask=token_attention_mask,
             num_diffusion_samples=num_diffusion_samples,
         )
@@ -1137,9 +1134,7 @@ class GeometryOps(nn.Module):
     """
 
     @staticmethod
-    def _random_rotations(
-        n: int, dtype: torch.dtype, device: torch.device, generator=None
-    ) -> Tensor:
+    def _random_rotations(n: int, dtype: torch.dtype, device: torch.device, generator=None) -> Tensor:
         """Uniform random rotations via normalized quaternions (sign-fixed).
 
         ``generator`` is optional so training keeps drawing from the global RNG
@@ -1167,7 +1162,10 @@ class GeometryOps(nn.Module):
         ).reshape(n, 3, 3)
 
     def _center_random_augmentation(
-        self, x: Tensor, atom_mask: Tensor, second_coords: Tensor | None = None,
+        self,
+        x: Tensor,
+        atom_mask: Tensor,
+        second_coords: Tensor | None = None,
         generator=None,
     ) -> tuple[Tensor, Tensor | None]:
         """Mask-aware centering, then a random rotation and translation.
@@ -1194,9 +1192,7 @@ class GeometryOps(nn.Module):
         # randn_like takes no generator, so spell the shape out — otherwise the
         # translation silently stays on the global RNG and seeding the rotation
         # alone is not enough to make the augmentation reproducible.
-        t = torch.randn(
-            x[:, 0:1, :].shape, dtype=x.dtype, device=x.device, generator=generator
-        )
+        t = torch.randn(x[:, 0:1, :].shape, dtype=x.dtype, device=x.device, generator=generator)
         x = x + t
         if second_coords is not None:
             second_coords = second_coords + t
@@ -1311,10 +1307,8 @@ def augment_with_generator(head, x0, mask, generator):
             support = False
         try:
             head._accepts_augmentation_generator = support
-        except AttributeError:                      # pragma: no cover - exotic heads
+        except AttributeError:  # pragma: no cover - exotic heads
             pass
     if support:
-        return head._center_random_augmentation(
-            x0, mask, second_coords=None, generator=generator
-        )
+        return head._center_random_augmentation(x0, mask, second_coords=None, generator=generator)
     return head._center_random_augmentation(x0, mask, second_coords=None)

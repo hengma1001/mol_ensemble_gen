@@ -45,8 +45,7 @@ def test_unknown_residue_falls_back_to_backbone():
 @pytest.mark.unit
 def test_full_match_fraction_and_scatter():
     seq = "AG"
-    md = [(0, "N"), (0, "CA"), (0, "C"), (0, "O"), (0, "CB"),
-          (1, "N"), (1, "CA"), (1, "C"), (1, "O")]
+    md = [(0, "N"), (0, "CA"), (0, "C"), (0, "O"), (0, "CB"), (1, "N"), (1, "CA"), (1, "C"), (1, "O")]
     amap = build_atom_map(seq, md, heavy_atoms=FAKE_TABLE)
     assert amap.num_slots == 9
     assert amap.matched_fraction == 1.0
@@ -71,8 +70,7 @@ def test_missing_atom_is_masked_not_zero_filled_into_loss():
 @pytest.mark.unit
 def test_scatter_batch_matches_per_frame():
     seq = "AG"
-    md = [(0, "N"), (0, "CA"), (0, "C"), (0, "O"), (0, "CB"),
-          (1, "N"), (1, "CA"), (1, "C"), (1, "O")]
+    md = [(0, "N"), (0, "CA"), (0, "C"), (0, "O"), (0, "CB"), (1, "N"), (1, "CA"), (1, "C"), (1, "O")]
     amap = build_atom_map(seq, md, heavy_atoms=FAKE_TABLE)
     frames = np.random.default_rng(0).normal(size=(3, len(md), 3)).astype(np.float32)
     batched = amap.scatter_batch(frames)
@@ -95,6 +93,6 @@ def test_canonical_resname_and_heavy_detection():
     assert canonical_resname("ala") == "ALA"
     assert is_heavy_atom("CA", "C")
     assert not is_heavy_atom("H", "H")
-    assert not is_heavy_atom("HB2")          # inferred from name
-    assert not is_heavy_atom("OXT")          # terminal oxygen skipped
+    assert not is_heavy_atom("HB2")  # inferred from name
+    assert not is_heavy_atom("OXT")  # terminal oxygen skipped
     assert is_heavy_atom("N")

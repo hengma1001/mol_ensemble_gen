@@ -60,7 +60,8 @@ def _loader(n, torch, temps=(320.0, 450.0)):
 
     return [
         _FakeBatch(
-            f"d{i % 2}", temps[i % len(temps)],
+            f"d{i % 2}",
+            temps[i % len(temps)],
             np.zeros((2, 4, 3), dtype="float32"),
             np.ones(4, dtype=bool),
         )
@@ -74,9 +75,7 @@ def test_validation_averages_and_restores_training_mode():
 
     m = _FakeModule()
     m.train()
-    out = _run_validation(
-        m, _FakeCache(), _loader(8, torch), 4, torch.float32, torch.device("cpu"), seed=0
-    )
+    out = _run_validation(m, _FakeCache(), _loader(8, torch), 4, torch.float32, torch.device("cpu"), seed=0)
     assert set(out) == {"loss", "mse"}
     assert len(m.calls) == 4
     # eval() during the pass...
@@ -91,14 +90,11 @@ def test_validation_is_reproducible_across_calls():
     """A fixed seed means the curve moves because the model moved, not the σ draw."""
     torch = pytest.importorskip("torch")
 
-    a = _run_validation(_FakeModule(), _FakeCache(), _loader(4, torch), 4,
-                        torch.float32, torch.device("cpu"), seed=7)
-    b = _run_validation(_FakeModule(), _FakeCache(), _loader(4, torch), 4,
-                        torch.float32, torch.device("cpu"), seed=7)
+    a = _run_validation(_FakeModule(), _FakeCache(), _loader(4, torch), 4, torch.float32, torch.device("cpu"), seed=7)
+    b = _run_validation(_FakeModule(), _FakeCache(), _loader(4, torch), 4, torch.float32, torch.device("cpu"), seed=7)
     assert a == b
 
-    c = _run_validation(_FakeModule(), _FakeCache(), _loader(4, torch), 4,
-                        torch.float32, torch.device("cpu"), seed=8)
+    c = _run_validation(_FakeModule(), _FakeCache(), _loader(4, torch), 4, torch.float32, torch.device("cpu"), seed=8)
     assert c != a
 
 
@@ -112,7 +108,7 @@ def test_repeated_calls_score_the_same_batches():
     """
     torch = pytest.importorskip("torch")
 
-    loader = _loader(20, torch)          # more batches than we consume per call
+    loader = _loader(20, torch)  # more batches than we consume per call
     m = _FakeModule()
     _run_validation(m, _FakeCache(), loader, 4, torch.float32, torch.device("cpu"), seed=1)
     first = [(d, t) for d, t, _, _ in m.calls]
@@ -126,8 +122,7 @@ def test_validation_stops_early_when_the_stream_runs_out():
     torch = pytest.importorskip("torch")
 
     m = _FakeModule()
-    out = _run_validation(m, _FakeCache(), _loader(2, torch), 10,
-                          torch.float32, torch.device("cpu"), seed=0)
+    out = _run_validation(m, _FakeCache(), _loader(2, torch), 10, torch.float32, torch.device("cpu"), seed=0)
     assert len(m.calls) == 2 and out
 
 
@@ -138,8 +133,7 @@ def test_validation_is_a_no_op_when_disabled(val_iter, n):
 
     it = None if val_iter is None else _loader(4, torch)
     m = _FakeModule()
-    assert _run_validation(m, _FakeCache(), it, n, torch.float32,
-                           torch.device("cpu"), seed=0) == {}
+    assert _run_validation(m, _FakeCache(), it, n, torch.float32, torch.device("cpu"), seed=0) == {}
     assert m.calls == []
     assert m.training, "a disabled validation pass must not touch training mode"
 
