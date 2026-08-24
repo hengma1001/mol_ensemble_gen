@@ -1137,9 +1137,15 @@ class GeometryOps(nn.Module):
     """
 
     @staticmethod
-    def _random_rotations(n: int, dtype: torch.dtype, device: torch.device) -> Tensor:
-        """Uniform random rotations via normalized quaternions (sign-fixed)."""
-        q = torch.randn((n, 4), dtype=dtype, device=device)
+    def _random_rotations(
+        n: int, dtype: torch.dtype, device: torch.device, generator=None
+    ) -> Tensor:
+        """Uniform random rotations via normalized quaternions (sign-fixed).
+
+        ``generator`` is optional so training keeps drawing from the global RNG
+        (unchanged behavior); validation passes one to make the draw reproducible.
+        """
+        q = torch.randn((n, 4), dtype=dtype, device=device, generator=generator)
         scale = torch.sqrt((q * q).sum(dim=1))
         signs = torch.where(q[:, 0] < 0, -scale, scale)
         q = q / signs[:, None]
@@ -1161,9 +1167,17 @@ class GeometryOps(nn.Module):
         ).reshape(n, 3, 3)
 
     def _center_random_augmentation(
-        self, x: Tensor, atom_mask: Tensor, second_coords: Tensor | None = None
+        self, x: Tensor, atom_mask: Tensor, second_coords: Tensor | None = None,
+        generator=None,
     ) -> tuple[Tensor, Tensor | None]:
-        """Mask-aware centering, then a random rotation and translation."""
+        """Mask-aware centering, then a random rotation and translation.
+
+        Pass ``generator`` to make the augmentation reproducible. Validation must
+        do so: with the draw coming from the global RNG, two evaluations of the
+        *same weights* score differently-oriented ground truth and land 2-2.4%
+        apart, which is the same order as the training improvements being
+        measured. Training leaves it ``None`` and keeps the global stream.
+        """
         bsz = x.shape[0]
         mask = atom_mask.unsqueeze(-1)
         denom = mask.sum(dim=1, keepdim=True).clamp(min=1)
@@ -1172,12 +1186,17 @@ class GeometryOps(nn.Module):
         if second_coords is not None:
             second_coords = second_coords - mean
 
-        r = self._random_rotations(bsz, x.dtype, x.device)
+        r = self._random_rotations(bsz, x.dtype, x.device, generator=generator)
         x = torch.einsum("bmd,bds->bms", x, r)
         if second_coords is not None:
             second_coords = torch.einsum("bmd,bds->bms", second_coords, r)
 
-        t = torch.randn_like(x[:, 0:1, :])
+        # randn_like takes no generator, so spell the shape out — otherwise the
+        # translation silently stays on the global RNG and seeding the rotation
+        # alone is not enough to make the augmentation reproducible.
+        t = torch.randn(
+            x[:, 0:1, :].shape, dtype=x.dtype, device=x.device, generator=generator
+        )
         x = x + t
         if second_coords is not None:
             second_coords = second_coords + t
@@ -1264,3 +1283,37 @@ def load_denoiser(
                 f"freshly initialized (t_conditioning={model.config.t_conditioning!r})"
             )
     return model.to(device)
+
+def augment_with_generator(head, x0, mask, generator):
+    """Center + randomly rotate/translate ``x0``, seeding the draw when possible.
+
+    The ``generator`` has to reach the augmentation, not just the ``eps`` draw:
+    with the rotation and translation coming off the global RNG, two validation
+    passes over the *same weights and same frames* scored 2-4% apart (measured:
+    40 passes spanned 2.935-3.053), which is the same magnitude as the training
+    effects the metric was being used to compare.
+
+    Only :class:`~mol_ensemble_gen.model.denoiser.GeometryOps` accepts the kwarg;
+    the reference backend's ``DiffusionStructureHead`` takes
+    ``(x, atom_mask, second_coords)`` and nothing else, so it is called unseeded
+    and its validation keeps the old few-percent jitter. Detecting support beats
+    hard-coding it: the reference signature is upstream's to change.
+    """
+    import inspect
+
+    support = getattr(head, "_accepts_augmentation_generator", None)
+    if support is None:
+        try:
+            params = inspect.signature(head._center_random_augmentation).parameters
+            support = "generator" in params
+        except (AttributeError, TypeError, ValueError):
+            support = False
+        try:
+            head._accepts_augmentation_generator = support
+        except AttributeError:                      # pragma: no cover - exotic heads
+            pass
+    if support:
+        return head._center_random_augmentation(
+            x0, mask, second_coords=None, generator=generator
+        )
+    return head._center_random_augmentation(x0, mask, second_coords=None)

@@ -45,6 +45,7 @@ import torch
 from torch import Tensor
 
 from .denoiser import GeometryOps  # noqa: F401  (re-exported for callers)
+from .denoiser import augment_with_generator as _augment
 
 #: EDM/Karras constants of the pretrained model, duplicated here so this module
 #: does not import the training package (which depends on it).
@@ -291,7 +292,11 @@ def flow_ode_sample(
         sigma, sigma_next = float(sigmas[i]), float(sigmas[i + 1])
         t_now, t_next = float(ts[i]), float(ts[i + 1])
 
-        x, _ = geometry._center_random_augmentation(x, atom_mask, second_coords=None)
+        # Seeded like the initial noise above: without the generator here the
+        # per-step augmentation comes off the global RNG, so ``generator`` does not
+        # actually pin the trajectory and a member is not reproducible from its
+        # seed. The sampled *distribution* is unaffected either way.
+        x, _ = _augment(geometry, x, atom_mask, generator)
         x_denoised, token_repr = _denoise(x, sigma, t_now)
         x = _align(x, x_denoised).to(x_denoised.dtype)
 
