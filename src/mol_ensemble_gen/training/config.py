@@ -73,6 +73,50 @@ class TemperatureConfig:
     embed_dim: int = 451                      # must equal s_inputs channel dim (c_s_inputs)
     hidden_dim: int = 256
     num_fourier: int = 32                     # Fourier features of normalized T
+    #: Add a multiplicative (FiLM) gain alongside the additive bias.
+    #:
+    #: The additive-only bias is a poor actuator for the thing temperature has to
+    #: control. Measured on the best checkpoint: the T signal reaches the
+    #: conditioned representation at full strength (‖s(450K)−s(320K)‖/‖s‖ = 0.12,
+    #: the same as a 5x change in sigma) yet the diversity of x0 predictions across
+    #: noise draws is temperature-flat (450K/320K ratio 1.01, 0.77, 1.06, 1.12,
+    #: 1.01 over sigma 128..0.5) while MD needs 4.65x. A global shift moves the
+    #: predicted mean; changing how far apart predictions land wants gain control.
+    #: Zero-init, so the gain is exactly 1.0 at step 0 and the model still starts
+    #: as the pretrained one.
+    film: bool = False
+
+
+@dataclass
+class SpreadConfig:
+    """Spread-matching loss term (scheme-agnostic; ``weight: 0`` disables it).
+
+    The coordinate MSE is minimised by predicting the conditional *mean*, so it
+    rewards collapsing the ensemble and never refers to temperature. Measured
+    consequence on the best checkpoint: x̂₀ diversity across noise draws is
+    temperature-flat (450K/320K ratio ~1.0 at every σ) where MD needs 4.65x, and
+    sampled ensembles respond 2.28x against MD's 4.65x.
+
+    This term matches the spread of the predicted frames to the spread of the
+    ground-truth frames in the same micro-batch. Because a micro-batch is B frames
+    of one (domain, temperature), that target *is* the MD spread at that
+    temperature — so the term is temperature-dependent with no new conditioning.
+    """
+
+    weight: float = 0.0                       # 0 → exactly the previous behaviour
+    atoms: int = 192                          # probe atoms for the distance matrix
+    #: Only apply the term for ``σ <= sigma_max``. This gate is load-bearing, not a
+    #: tuning knob: matching the *full* MD spread is only a valid target where the
+    #: posterior is data-dominated. Measured log(pred/gt) on the best checkpoint is
+    #: −0.06..−0.33 at σ=8 but −1.06..−1.66 at σ=128, and that high-σ contraction is
+    #: *correct* — given a nearly-pure-noise input the conditional mean really is
+    #: near the dataset mean. Without the gate the term would push the model to
+    #: over-disperse exactly where it should not.
+    sigma_max: float = 8.0
+    #: Draw one σ per micro-batch instead of per frame. Only applied when
+    #: ``weight > 0``: with per-frame σ the frames are denoised from different
+    #: noise levels, so their mutual spread measures the σ draw, not the ensemble.
+    shared_sigma: bool = True
 
 
 @dataclass
@@ -141,6 +185,22 @@ class FlowConfig:
     schedule: str = "karras"                  # "karras" | "uniform_t"
     rho: float = 7.0                          # Karras schedule exponent
     sigma_max: float = 256.0                   # start noise level (t_max=σ/(1+σ))
+    #: Per-temperature override of ``sigma_max``, e.g. ``{320: 256, 450: 64}``.
+    #:
+    #: **Measured not to help — left in place as a general knob and as the record of
+    #: a negative result.** The idea was that start noise is a strong lever on final
+    #: spread (it is, and non-monotonically: lowering it *raises* spread), so a
+    #: per-temperature start could fix the response ratio that no training lever has
+    #: moved. On a single domain it looked decisive: sigma_max 256 at 320 K and 64 at
+    #: 450 K reproduced MD's 4.73x ratio almost exactly.
+    #:
+    #: Swept across six *training* domains that collapses. The optimal start noise is
+    #: domain-specific, not temperature-specific — rank correlation with temperature
+    #: runs +0.70, +0.40, -0.60, -0.40, -0.70, -1.00 across the six. The best single
+    #: constant is 256, i.e. the existing default, and a median per-T table is
+    #: *worse* even in-sample (mean |log(model/MD)| 0.159 vs 0.151). A
+    #: per-(domain,T) oracle only reaches 0.110, so the whole lever is worth little.
+    sigma_max_by_temp: dict = field(default_factory=dict)
     #: Native flow-time conditioning in our denoiser: "off" | "add" | "replace".
     #: "add" embeds t directly alongside the pretrained log-σ features with a
     #: zero-init output, so step 0 is bitwise the pretrained model and native-t is
@@ -179,6 +239,7 @@ class TrainConfig:
     temperature: TemperatureConfig = field(default_factory=TemperatureConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     flow: FlowConfig = field(default_factory=FlowConfig)  # used when optim.scheme=="flow"
+    spread: SpreadConfig = field(default_factory=SpreadConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
     amp_dtype: str = "bfloat16"               # bfloat16 | float16 | float32
     log_every: int = 20

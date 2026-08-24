@@ -196,3 +196,137 @@ def test_config_rejects_bad_flow_values(tmp_path, yaml_text, match):
 def test_config_rejects_unknown_flow_key():
     with pytest.raises(ValueError, match="FlowConfig"):
         _build(TrainConfig, {"flow": {"bogus_knob": 1}})
+
+
+# ---------------------------------------------------------------------------
+# temperature conditioning: FiLM gain + spread-matching term
+# ---------------------------------------------------------------------------
+
+
+def test_film_gain_is_identity_at_init():
+    """Enabling ``film`` must not perturb a pretrained model at step 0.
+
+    The gain head is zero-initialized, so the multiplier is exactly 1.0 and
+    ``inject_temperature`` reduces to the additive-bias behaviour it had before.
+    """
+    import torch
+
+    from mol_ensemble_gen.training.conditioning import build_temperature_embedder
+    from mol_ensemble_gen.training.config import TemperatureConfig
+    from mol_ensemble_gen.training.loss import inject_temperature
+
+    cond = {
+        "s_inputs": torch.randn(1, 7, 451),
+        "token_attention_mask": torch.tensor([[1.0] * 5 + [0.0, 0.0]]),
+    }
+    plain = build_temperature_embedder(TemperatureConfig(film=False))
+    film = build_temperature_embedder(TemperatureConfig(film=True))
+    for T in (320.0, 450.0):
+        a = inject_temperature(cond, plain, T, torch.float32)
+        b = inject_temperature(cond, film, T, torch.float32)
+        assert torch.allclose(a, b, atol=0, rtol=0), "film must be exactly identity at init"
+        # and at init the injection is a no-op on s_inputs entirely
+        assert torch.allclose(a, cond["s_inputs"], atol=1e-6)
+
+    assert torch.equal(film.scale(torch.tensor([320.0, 450.0])),
+                       torch.ones(2, 451)), "gain must start at exactly 1.0"
+
+
+def test_film_gain_is_multiplicative_once_trained():
+    """A non-zero gain scales s_inputs and leaves padding tokens alone."""
+    import torch
+
+    from mol_ensemble_gen.training.conditioning import build_temperature_embedder
+    from mol_ensemble_gen.training.config import TemperatureConfig
+    from mol_ensemble_gen.training.loss import inject_temperature
+
+    te = build_temperature_embedder(TemperatureConfig(film=True))
+    with torch.no_grad():                      # pretend it trained: constant gain of +0.5
+        te.gain[-1].bias.fill_(0.5)
+    si = torch.randn(1, 4, 451)
+    cond = {"s_inputs": si, "token_attention_mask": torch.tensor([[1.0, 1.0, 0.0, 0.0]])}
+    out = inject_temperature(cond, te, 450.0, torch.float32)
+    assert torch.allclose(out[:, :2], si[:, :2] * 1.5, atol=1e-5), "real tokens scale by the gain"
+    assert torch.allclose(out[:, 2:], si[:, 2:], atol=1e-6), "padding tokens are untouched"
+
+
+def test_internal_spread_is_rigid_invariant_and_scales():
+    """The spread probe must see conformational change, not pose."""
+    import torch
+
+    from mol_ensemble_gen.training.loss import _internal_spread
+
+    torch.manual_seed(3)
+    mask = torch.ones(5, 24)
+    x = torch.randn(5, 24, 3) * 4.0
+    base = _internal_spread(x, mask)
+
+    q = torch.linalg.qr(torch.randn(3, 3))[0]
+    if torch.det(q) < 0:
+        q[:, 0] *= -1
+    moved = x @ q + torch.tensor([12.0, -3.0, 5.0])
+    assert torch.allclose(_internal_spread(moved, mask), base, atol=1e-3), \
+        "a rigid motion of every frame must not change the spread"
+    assert torch.allclose(_internal_spread(x * 2.0, mask), base * 2.0, rtol=1e-3), \
+        "spread is a length, so it scales linearly"
+    same = x[:1].expand(5, -1, -1).contiguous()
+    assert float(_internal_spread(same, mask)) < 1e-3, "identical frames have no spread"
+
+
+def test_spread_weight_zero_leaves_the_loss_untouched():
+    """The default config must reproduce the previous loss exactly.
+
+    Guards the whole feature: ``weight: 0`` has to be a true no-op, including not
+    switching the σ draw to one-per-micro-batch.
+    """
+    import inspect
+
+    from mol_ensemble_gen.training.config import SpreadConfig
+    from mol_ensemble_gen.training import loss as L
+
+    captured = {}
+
+    def fake(*args, **kwargs):
+        captured.update(kwargs)
+        return 0.0, {}
+
+    real = L.flow_matching_loss
+    try:
+        L.flow_matching_loss = fake
+        L.diffusion_loss("flow", spread=SpreadConfig(), flow=None)
+        assert "spread_weight" not in captured, "weight 0 must not pass a spread term"
+        assert "shared_sigma" not in captured, "weight 0 must not change the sigma draw"
+        captured.clear()
+        L.diffusion_loss("flow", spread=SpreadConfig(weight=0.3, atoms=64), flow=None)
+        assert captured["spread_weight"] == 0.3
+        assert captured["spread_atoms"] == 64
+        assert captured["shared_sigma"] is True
+    finally:
+        L.flow_matching_loss = real
+
+    # the plumbing exists on both entry points
+    for fn in (L.flow_matching_loss, L.edm_diffusion_loss):
+        p = inspect.signature(fn).parameters
+        assert {"spread_weight", "spread_atoms", "shared_sigma"} <= set(p)
+        assert p["spread_weight"].default == 0.0
+        assert p["shared_sigma"].default is False
+
+
+def test_spread_term_penalises_collapse_and_vanishes_when_matched():
+    """The term must be ~0 when spreads agree and grow when the model collapses."""
+    import math
+    import torch
+
+    from mol_ensemble_gen.training.loss import _internal_spread
+
+    torch.manual_seed(11)
+    mask = torch.ones(6, 30)
+    gt = torch.randn(6, 30, 3) * 3.0
+    sp_gt = _internal_spread(gt, mask)
+
+    matched = math.log(float(_internal_spread(gt.clone(), mask)) / float(sp_gt)) ** 2
+    assert matched < 1e-8, "identical spread must cost nothing"
+
+    collapsed = gt.mean(0, keepdim=True).expand_as(gt).contiguous()
+    penalty = math.log(max(float(_internal_spread(collapsed, mask)), 1e-6) / float(sp_gt)) ** 2
+    assert penalty > 1.0, "a collapsed ensemble must be penalised heavily"

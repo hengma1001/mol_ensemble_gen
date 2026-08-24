@@ -42,6 +42,21 @@ def plan_denoiser(trained_keys, backend: str, t_conditioning: str) -> tuple[bool
     return backend == "ours", "off"
 
 
+def sigma_max_for(flow, temperature) -> float:
+    """Start noise for this temperature: the per-T table if given, else the scalar.
+
+    Keys are matched numerically (YAML gives them as ``int`` or ``str``) and the
+    nearest listed temperature wins, so a table built for the five mdCATH
+    temperatures still resolves for anything in between.
+    """
+    table = getattr(flow, "sigma_max_by_temp", None) or {}
+    if not table or temperature is None:
+        return float(flow.sigma_max)
+    keys = {float(k): float(v) for k, v in table.items()}
+    nearest = min(keys, key=lambda k: abs(k - float(temperature)))
+    return keys[nearest]
+
+
 def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "cuda"):
     """Load a finetuned model and return ``(model, temp_holder)``.
 
@@ -104,7 +119,7 @@ def build_temperature_conditioned_model(checkpoint: str | Path, device: str = "c
             # Reuse the CLI/ensemble sampling knobs where they map onto the ODE.
             steps = int(kwargs.get("num_sampling_steps") or flow.num_sampling_steps)
             smax = kwargs.get("max_inference_sigma")
-            smax = float(smax) if smax is not None else flow.sigma_max
+            smax = float(smax) if smax is not None else sigma_max_for(flow, temp)
             # head supplies the geometry helpers; head.diffusion_module the network.
             return flow_ode_sample(
                 head.diffusion_module, head, steps=steps, sampler=flow.sampler,
