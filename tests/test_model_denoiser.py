@@ -324,3 +324,67 @@ def test_load_denoiser_accepts_a_training_checkpoint():
         PRETRAINED_NUM_TENSORS,
         PRETRAINED_NUM_PARAMS,
     )
+
+
+def test_augmentation_is_reproducible_with_a_generator():
+    """The rotation/translation draw must honour ``generator``.
+
+    Regression test for a measurement bug, not a modelling one: the augmentation
+    used to come off the global RNG even when the caller supplied a seeded
+    generator, so two validation passes over the *same weights and same frames*
+    disagreed by 2-4% — the same magnitude as the training effects the validation
+    number was being used to compare. Anything that reads a loss twice and
+    subtracts needs this to hold.
+    """
+    import torch
+
+    from mol_ensemble_gen.model.denoiser import GeometryOps, augment_with_generator
+
+    geom = GeometryOps()
+    x = torch.randn(2, 9, 3, dtype=torch.float32)
+    mask = torch.ones(2, 9, dtype=torch.float32)
+
+    def once(seed):
+        g = torch.Generator().manual_seed(seed)
+        out, _ = augment_with_generator(geom, x.clone(), mask, g)
+        return out
+
+    torch.manual_seed(0)
+    a = once(1234)
+    torch.manual_seed(999)          # perturb the global stream between calls
+    b = once(1234)
+    assert torch.equal(a, b), "same generator seed must give the same augmentation"
+
+    assert not torch.equal(a, once(4321)), "a different seed must actually change it"
+
+
+def test_augmentation_tolerates_heads_without_generator_support():
+    """The reference ``DiffusionStructureHead`` takes no ``generator`` kwarg.
+
+    Its signature is upstream's to change, so support is probed rather than
+    assumed; a head lacking it must still work (unseeded), not raise TypeError.
+    """
+    import torch
+
+    from mol_ensemble_gen.model.denoiser import GeometryOps, augment_with_generator
+
+    class LegacyHead:
+        """Mimics the reference signature: no ``generator`` parameter."""
+
+        def __init__(self):
+            self._inner = GeometryOps()
+            self.calls = 0
+
+        def _center_random_augmentation(self, x, atom_mask, second_coords=None):
+            self.calls += 1
+            return self._inner._center_random_augmentation(x, atom_mask, second_coords)
+
+    head = LegacyHead()
+    x = torch.randn(1, 5, 3, dtype=torch.float32)
+    mask = torch.ones(1, 5, dtype=torch.float32)
+    out, _ = augment_with_generator(head, x, mask, torch.Generator().manual_seed(7))
+    assert out.shape == x.shape
+    assert head.calls == 1
+    # probe result is cached, so a second call does not re-inspect the signature
+    augment_with_generator(head, x, mask, torch.Generator().manual_seed(7))
+    assert head._accepts_augmentation_generator is False

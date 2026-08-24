@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 
+from ..model.denoiser import augment_with_generator as _augment
 from .config import SIGMA_DATA, TRAIN_NOISE_LOG_MEAN, TRAIN_NOISE_LOG_STD
 
 # Conditioning tensor names forwarded verbatim to the denoiser (s_inputs is
@@ -83,7 +84,7 @@ def _denoise_and_weighted_mse(
     mask = atom_mask.to(torch.float32).to(device)[None, :].expand(b, -1)  # (B, N)
 
     # Center + random rotation/translation augmentation of the ground truth.
-    x0, _ = head._center_random_augmentation(x0, mask, second_coords=None)
+    x0, _ = _augment(head, x0, mask, generator)
 
     sigma = sigma.to(torch.float32)
     eps = torch.randn(x0.shape, device=device, generator=generator, dtype=torch.float32)
