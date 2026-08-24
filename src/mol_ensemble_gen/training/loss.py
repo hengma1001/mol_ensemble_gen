@@ -51,11 +51,48 @@ def inject_temperature(conditioning: dict, temp_embedder, temperature: float, dt
     """
     s_inputs = conditioning["s_inputs"].to(dtype)
     bias = temp_embedder(temperature).to(dtype)          # (1, C)
+    gain = temp_embedder.scale(temperature).to(dtype)    # (1, C); exactly 1.0 when film is off
     tam = conditioning.get("token_attention_mask")
     if tam is not None:
         keep = tam.to(dtype)[..., None]                  # (1, L, 1)
-        return s_inputs + bias[:, None, :] * keep
-    return s_inputs + bias[:, None, :]
+        # Padding tokens keep gain 1 and bias 0, so masking applies to the
+        # *deviation* from identity rather than to the gain itself.
+        g = 1.0 + (gain[:, None, :] - 1.0) * keep
+        return s_inputs * g + bias[:, None, :] * keep
+    return s_inputs * gain[:, None, :] + bias[:, None, :]
+
+
+
+
+def _internal_spread(x, mask, n_probe: int = 192):
+    """Mean pairwise structural spread of a batch of frames, in Angstrom.
+
+    Measured on **inter-atomic distances** rather than coordinates, so it is
+    invariant to rotation and translation by construction — no Kabsch alignment,
+    and therefore no SVD in the loss graph. For frames ``i,j`` the distance is
+    ``rms(D_i - D_j)`` over a fixed evenly-spaced subset of present atoms, which
+    keeps the cost at ``O(n_probe^2)`` regardless of chain length.
+
+    ``x`` is ``(B, N, 3)``, ``mask`` is ``(B, N)``. Returns a scalar tensor.
+    """
+    import torch
+
+    present = mask[0].nonzero(as_tuple=False).reshape(-1)
+    if present.numel() < 3:
+        return x.new_zeros(())
+    if present.numel() > n_probe:                      # evenly spaced, deterministic
+        sel = torch.linspace(0, present.numel() - 1, n_probe, device=x.device).long()
+        present = present[sel]
+    p = x[:, present, :]                                        # (B, K, 3)
+    d = torch.cdist(p, p)                                       # (B, K, K)
+    k = d.shape[-1]
+    iu = torch.triu_indices(k, k, offset=1, device=x.device)
+    dv = d[:, iu[0], iu[1]]                                     # (B, K(K-1)/2)
+    b = dv.shape[0]
+    if b < 2:
+        return x.new_zeros(())
+    ii, jj = torch.triu_indices(b, b, offset=1, device=x.device)
+    return ((dv[ii] - dv[jj]) ** 2).mean(dim=-1).clamp_min(1e-8).sqrt().mean()
 
 
 def _denoise_and_weighted_mse(
@@ -70,11 +107,32 @@ def _denoise_and_weighted_mse(
     weight,              # (B,) per-frame loss weight
     generator=None,
     flow_t=None,         # (B,) flow path time, for native-t conditioning
+    spread_weight: float = 0.0,
+    spread_atoms: int = 192,
+    spread_sigma_max: float = 8.0,
 ):
     """Shared core: noise → denoise → fp32 Kabsch align → weighted coordinate MSE.
 
-    Returns ``(loss, per_frame_mse)`` where ``per_frame_mse`` is the unweighted
-    per-frame masked MSE; both schemes only differ in ``sigma`` and ``weight``.
+    Returns ``(loss, per_frame_mse, extra)``; ``per_frame_mse`` is the unweighted
+    per-frame masked MSE and ``extra`` carries the spread diagnostics. Both schemes
+    differ *only* in ``sigma`` and ``weight``.
+
+    ``spread_weight > 0`` adds a **spread-matching** term. The coordinate MSE is
+    minimised by predicting the conditional *mean*, so it actively rewards
+    collapsing the ensemble, and nothing in it refers to temperature at all. The
+    measured consequence: the diversity of x̂₀ across noise draws is
+    temperature-flat (450K/320K ratio ≈ 1.0 at every σ) where MD needs 4.65x. This
+    term compares the spread of the predicted frames against the spread of the
+    ground-truth frames in the same micro-batch — which, because a micro-batch is
+    B frames of one (domain, temperature), *is* the MD spread at that temperature.
+    It is therefore temperature-dependent for free, with no new conditioning.
+
+    Penalising ``log(pred/gt)`` squared makes it scale-free and matches the
+    evaluation metric (mean ``|log(model/MD)|``), so training and scoring finally
+    optimise the same quantity. Note the term deliberately biases the denoiser away
+    from the exact conditional mean: with a perfect velocity field the ODE would
+    already transport noise to the right marginal, so this trades theoretical
+    exactness for a fix to a measured 2x under-dispersion.
     """
     import torch
 
@@ -122,7 +180,28 @@ def _denoise_and_weighted_mse(
         sq_err = ((x_denoised - x0_aligned) ** 2).sum(-1)             # (B, N)
         per_frame = (sq_err * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)
         loss = (weight.to(torch.float32) * per_frame).mean()
-    return loss, per_frame
+
+        extra = {}
+        # Gate on σ: the "match the MD spread" target is only valid where the
+        # posterior is data-dominated (see SpreadConfig.sigma_max).
+        in_band = bool(float(sigma.mean()) <= spread_sigma_max)
+        if spread_weight > 0.0 and b > 1 and in_band:
+            sp_pred = _internal_spread(x_denoised, mask, n_probe=spread_atoms)
+            # The target is data, not a prediction — detach so no gradient flows
+            # into it (it has no parameters, but keep the graph honest).
+            sp_gt = _internal_spread(x0, mask, n_probe=spread_atoms).detach()
+            if float(sp_gt) > 1e-6:
+                ratio = torch.log(sp_pred.clamp_min(1e-6) / sp_gt)
+                loss = loss + spread_weight * ratio.pow(2)
+                extra = {
+                    "spread_pred": float(sp_pred),
+                    "spread_gt": float(sp_gt),
+                    "spread_log_ratio": float(ratio),
+                    "spread_applied": 1.0,
+                }
+        elif spread_weight > 0.0:
+            extra = {"spread_applied": 0.0}
+    return loss, per_frame, extra
 
 
 def edm_diffusion_loss(
@@ -138,21 +217,30 @@ def edm_diffusion_loss(
     p_mean: float = TRAIN_NOISE_LOG_MEAN,
     p_std: float = TRAIN_NOISE_LOG_STD,
     generator=None,
+    spread_weight: float = 0.0,
+    spread_atoms: int = 192,
+    spread_sigma_max: float = 8.0,
+    shared_sigma: bool = False,
 ):
     """EDM/Karras denoising loss for one (domain, temperature) micro-batch."""
     import torch
 
     device = gt_coords.device
     b = gt_coords.shape[0]
-    log_sigma = p_mean + p_std * torch.randn(b, device=device, generator=generator)
+    n_draw = 1 if shared_sigma else b
+    log_sigma = p_mean + p_std * torch.randn(n_draw, device=device, generator=generator)
+    if shared_sigma:
+        log_sigma = log_sigma.expand(b)
     sigma = (sigma_data * torch.exp(log_sigma)).to(torch.float32)   # (B,)
     lam = (sigma**2 + sigma_data**2) / (sigma * sigma_data) ** 2    # (B,)
 
-    loss, per_frame = _denoise_and_weighted_mse(
+    loss, per_frame, extra = _denoise_and_weighted_mse(
         diffusion_module, head, temp_embedder, conditioning,
         gt_coords, atom_mask, temperature, sigma, lam, generator=generator,
+        spread_weight=spread_weight, spread_atoms=spread_atoms,
+        spread_sigma_max=spread_sigma_max,
     )
-    return loss, {"sigma_mean": float(sigma.mean()), "mse": float(per_frame.mean())}
+    return loss, {"sigma_mean": float(sigma.mean()), "mse": float(per_frame.mean()), **extra}
 
 
 def flow_matching_loss(
@@ -171,6 +259,10 @@ def flow_matching_loss(
     weighting: str = "velocity",
     t_min: float = 1e-3,
     generator=None,
+    spread_weight: float = 0.0,
+    spread_atoms: int = 192,
+    spread_sigma_max: float = 8.0,
+    shared_sigma: bool = False,
 ):
     """Rectified-flow (flow-matching) loss, reusing the EDM denoiser via σ=t/(1−t).
 
@@ -191,8 +283,11 @@ def flow_matching_loss(
     b = gt_coords.shape[0]
     # Single source of truth for the t draw (including the load-bearing ln σ_d
     # shift) — shared with the sampler so training and sampling cannot diverge.
+    # One σ for the whole micro-batch when the spread term is active: with a
+    # per-frame σ the frames are denoised from wildly different noise levels, so
+    # their mutual spread measures the σ draw rather than the ensemble.
     t, sigma = sample_flow_time(
-        b,
+        1 if shared_sigma else b,
         device=device,
         time_dist=time_dist,
         p_mean=p_mean,
@@ -201,30 +296,43 @@ def flow_matching_loss(
         t_min=t_min,
         generator=generator,
     )
+    if shared_sigma:
+        t, sigma = t.expand(b), sigma.expand(b)
 
     if weighting == "data":
         weight = torch.ones_like(t)
     else:  # velocity matching: ‖v_θ − v*‖² = ‖x̂₀ − x0‖² / t²
         weight = 1.0 / (t * t)
 
-    loss, per_frame = _denoise_and_weighted_mse(
+    loss, per_frame, extra = _denoise_and_weighted_mse(
         diffusion_module, head, temp_embedder, conditioning,
         gt_coords, atom_mask, temperature, sigma, weight,
         generator=generator, flow_t=t,
+        spread_weight=spread_weight, spread_atoms=spread_atoms,
+        spread_sigma_max=spread_sigma_max,
     )
     return loss, {
         "sigma_mean": float(sigma.mean()),
         "t_mean": float(t.mean()),
         "mse": float(per_frame.mean()),
+        **extra,
     }
 
 
-def diffusion_loss(scheme: str, *args, flow=None, **kwargs):
+def diffusion_loss(scheme: str, *args, flow=None, spread=None, **kwargs):
     """Dispatch to the EDM or flow-matching loss by ``scheme`` ("edm" | "flow").
 
     ``flow`` is a :class:`~.config.FlowConfig` supplying the flow-matching
-    hyper-parameters; ignored for the EDM scheme.
+    hyper-parameters; ignored for the EDM scheme. ``spread`` is a
+    :class:`~.config.SpreadConfig`; ``shared_sigma`` is forwarded **only** when the
+    weight is positive, so a default config reproduces the previous behaviour
+    exactly rather than silently changing the σ draw.
     """
+    if spread is not None and spread.weight > 0.0:
+        kwargs.setdefault("spread_weight", spread.weight)
+        kwargs.setdefault("spread_atoms", spread.atoms)
+        kwargs.setdefault("spread_sigma_max", spread.sigma_max)
+        kwargs.setdefault("shared_sigma", spread.shared_sigma)
     if scheme == "edm":
         return edm_diffusion_loss(*args, **kwargs)
     if scheme == "flow":

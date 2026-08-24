@@ -37,6 +37,7 @@ def build_temperature_embedder(cfg):
         hidden_dim=cfg.hidden_dim,
         num_fourier=cfg.num_fourier,
         norm=TempNorm(ref=cfg.ref, scale=cfg.scale),
+        film=getattr(cfg, "film", False),
     )
 
 
@@ -51,9 +52,11 @@ def _make_module():
         by a 2-layer MLP whose output layer is zero-initialized (identity at init).
         """
 
-        def __init__(self, embed_dim: int, hidden_dim: int, num_fourier: int, norm: TempNorm):
+        def __init__(self, embed_dim: int, hidden_dim: int, num_fourier: int, norm: TempNorm,
+                     film: bool = False):
             super().__init__()
             self.norm = norm
+            self.film = bool(film)
             # Fixed (non-trainable) Fourier frequencies spanning several octaves,
             # so a small MLP can express smooth-to-sharp temperature dependence.
             freqs = 2.0 ** torch.linspace(-2.0, 5.0, num_fourier)
@@ -66,6 +69,17 @@ def _make_module():
             # Zero-init the output layer: step-0 bias is 0 → denoiser unchanged.
             nn.init.zeros_(self.mlp[-1].weight)
             nn.init.zeros_(self.mlp[-1].bias)
+            # Multiplicative (FiLM) gain head. Separate from the bias MLP so a
+            # checkpoint trained without it loads unchanged, and also zero-init so
+            # the gain starts at exactly 1.0.
+            if self.film:
+                self.gain = nn.Sequential(
+                    nn.Linear(2 * num_fourier, hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(hidden_dim, embed_dim),
+                )
+                nn.init.zeros_(self.gain[-1].weight)
+                nn.init.zeros_(self.gain[-1].bias)
 
         def features(self, temp_kelvin):
             t = torch.as_tensor(temp_kelvin, dtype=self.freqs.dtype, device=self.freqs.device)
@@ -76,6 +90,18 @@ def _make_module():
         def forward(self, temp_kelvin):
             """Return the additive bias ``(B, embed_dim)`` for temperatures ``(B,)``."""
             return self.mlp(self.features(temp_kelvin))
+
+        def scale(self, temp_kelvin):
+            """Return the multiplicative gain ``(B, embed_dim)``; ``1.0`` when off.
+
+            Exactly 1.0 at init (zero-init head), so enabling ``film`` does not
+            perturb a pretrained or resumed model until the gain is trained.
+            """
+            f = self.features(temp_kelvin)
+            if not self.film:
+                return torch.ones(f.shape[0], self.mlp[-1].out_features,
+                                  dtype=f.dtype, device=f.device)
+            return 1.0 + self.gain(f)
 
     return _TemperatureEmbedder
 

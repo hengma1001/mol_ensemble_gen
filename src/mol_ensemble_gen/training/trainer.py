@@ -59,13 +59,15 @@ def _make_trainable():
         params are not registered/synced; only its stateless helpers are used.
         """
 
-        def __init__(self, diffusion_module, temp_embedder, head, scheme="edm", flow=None):
+        def __init__(self, diffusion_module, temp_embedder, head, scheme="edm", flow=None,
+                     spread=None):
             super().__init__()
             self.diffusion_module = diffusion_module
             self.temp_embedder = temp_embedder
             object.__setattr__(self, "_head", head)
             self._scheme = scheme
             object.__setattr__(self, "_flow", flow)
+            object.__setattr__(self, "_spread", spread)
 
         def forward(self, conditioning, gt_coords, atom_mask, temperature, generator=None):
             from .loss import diffusion_loss
@@ -74,7 +76,7 @@ def _make_trainable():
                 self._scheme,
                 self.diffusion_module, self._head, self.temp_embedder,
                 conditioning, gt_coords, atom_mask, temperature,
-                flow=self._flow, generator=generator,
+                flow=self._flow, spread=self._spread, generator=generator,
             )
 
     return _Trainable
@@ -336,7 +338,7 @@ def train(cfg) -> None:
     Trainable = _make_trainable()
     trainable = Trainable(
         diffusion_module, temp_embedder, head,
-        scheme=cfg.optim.scheme, flow=cfg.flow,
+        scheme=cfg.optim.scheme, flow=cfg.flow, spread=cfg.spread,
     ).to(device)
     if rank == 0:
         print(f"[train] scheme={cfg.optim.scheme}", flush=True)
