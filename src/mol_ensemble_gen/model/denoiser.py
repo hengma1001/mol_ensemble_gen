@@ -1284,6 +1284,7 @@ def load_denoiser(
             )
     return model.to(device)
 
+
 def augment_with_generator(head, x0, mask, generator):
     """Center + randomly rotate/translate ``x0``, seeding the draw when possible.
 

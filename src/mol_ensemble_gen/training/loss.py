@@ -27,8 +27,6 @@ The whole coordinate math runs fp32; only matched model atoms contribute
 
 from __future__ import annotations
 
-import math
-
 from ..model.denoiser import augment_with_generator as _augment
 from .config import SIGMA_DATA, TRAIN_NOISE_LOG_MEAN, TRAIN_NOISE_LOG_STD
 
@@ -60,8 +58,6 @@ def inject_temperature(conditioning: dict, temp_embedder, temperature: float, dt
         g = 1.0 + (gain[:, None, :] - 1.0) * keep
         return s_inputs * g + bias[:, None, :] * keep
     return s_inputs * gain[:, None, :] + bias[:, None, :]
-
-
 
 
 def _internal_spread(x, mask, n_probe: int = 192):

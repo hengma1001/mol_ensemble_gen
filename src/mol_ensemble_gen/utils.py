@@ -52,7 +52,11 @@ def update_boltz_schema(  # noqa: C901, PLR0915, PLR0912
     Returns
     -------
     scheme: dict
-        The updated input schema, with the "sequences" field converted to a list of ProteinInput, DNAInput, RNAInput or LigandInput objects. The "version" field is removed if exists. The "constraints" and "properties" fields are not processed and returned as is, since they are not used in ESMFold2. The "templates" field is also not processed.
+        The updated input schema, with the "sequences" field converted to a
+        list of ProteinInput, DNAInput, RNAInput or LigandInput objects. The
+        "version" field is removed if it exists. The "constraints" and
+        "properties" fields are returned as is, since ESMFold2 does not use
+        them; "templates" is likewise left unprocessed.
 
     """
 
@@ -106,7 +110,9 @@ def fasta_to_scheme(input_fasta: Path) -> dict:
     Returns
     -------
     scheme: dict
-        The input schema, with the "sequences" field converted to a list of ProteinInput objects. The "constraints", "properties" and "templates" fields are not included since they are tricky to define in fasta format.
+        The input schema, with the "sequences" field converted to a list of
+        ProteinInput objects. The "constraints", "properties" and "templates"
+        fields are not included, since they are tricky to express in FASTA.
 
     """
 
