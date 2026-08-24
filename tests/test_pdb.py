@@ -37,9 +37,9 @@ def test_parse_pdb_sequences(tmp_path):
 
     seqs = parse_pdb_sequences(pdb)
 
-    assert list(seqs) == ["A", "B"]        # chain order preserved
-    assert seqs["A"] == "GYD"              # CA-only, altloc A kept once, HETATM & 2nd model ignored
-    assert seqs["B"] == "MW"               # MSE mapped to M
+    assert list(seqs) == ["A", "B"]  # chain order preserved
+    assert seqs["A"] == "GYD"  # CA-only, altloc A kept once, HETATM & 2nd model ignored
+    assert seqs["B"] == "MW"  # MSE mapped to M
 
 
 @pytest.mark.unit
@@ -84,7 +84,9 @@ def test_generate_from_pdb_end_to_end(tmp_path, monkeypatch):
     assert len(members) == 3
     out = tmp_path / "out"
     assert sorted(p.name for p in out.glob("*.cif")) == [
-        "prot_m0000_s00.cif", "prot_m0001_s00.cif", "prot_m0002_s00.cif"
+        "prot_m0000_s00.cif",
+        "prot_m0001_s00.cif",
+        "prot_m0002_s00.cif",
     ]
     assert (out / "metadata.csv").exists()
 
@@ -100,7 +102,8 @@ def test_real_pdb_fold_run(tmp_path):
 
     example = Path(__file__).resolve().parents[1] / "examples" / "example.pdb"
     spec = EnsembleSpec(
-        members=2, base_seed=1,
+        members=2,
+        base_seed=1,
         sampling=SamplingParams(num_loops=4, num_sampling_steps=20, num_diffusion_samples=1),
     )
     ens = ESMFold2Ensemble(spec, device="cuda")

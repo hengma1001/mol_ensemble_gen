@@ -51,8 +51,15 @@ def _write_sidecar(out_dir: Path, member_idx: int, records: list[EnsembleMember]
     tmp.replace(_sidecar(out_dir, member_idx))
 
 
-def _worker(rank: int, gpus: list[int], input_path: str, out_dir: str,
-            spec: EnsembleSpec, shards: list[list[int]], model_name: str) -> None:
+def _worker(
+    rank: int,
+    gpus: list[int],
+    input_path: str,
+    out_dir: str,
+    spec: EnsembleSpec,
+    shards: list[list[int]],
+    model_name: str,
+) -> None:
     """Subprocess entry point: fold the members assigned to this GPU."""
     import torch
 
@@ -91,8 +98,10 @@ class LocalGPUExecutor:
 
         n = min(len(self.gpus), len(todo))
         shards = plan_shards(todo, n)
-        print(f"[executor] {len(todo)} members over {n} GPU(s): "
-              + ", ".join(f"gpu{self.gpus[r]}:{len(shards[r])}" for r in range(n)))
+        print(
+            f"[executor] {len(todo)} members over {n} GPU(s): "
+            + ", ".join(f"gpu{self.gpus[r]}:{len(shards[r])}" for r in range(n))
+        )
 
         import torch.multiprocessing as mp
 

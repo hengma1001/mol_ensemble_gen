@@ -27,13 +27,11 @@ class ESMFold2Model_API(object):
         self.model = ESMFold2Model.from_pretrained("biohub/ESMFold2").cuda().eval()
 
     def predict_structure(self, input_spi: StructurePredictionInput):
-
         result = ESMFold2InputBuilder().fold(self.model, input_spi, **self.config.__dict__)
 
         return result
 
     def predict_structure_from_yml_file(self, input_yaml: Path):
-
         with open(input_yaml, "r") as f:
             schema = yaml.safe_load(f)
 
@@ -43,7 +41,6 @@ class ESMFold2Model_API(object):
         return self.predict_structure(input_spi)
 
     def predict_structure_from_fasta(self, input_fasta: Path):
-
         schema = fasta_to_scheme(input_fasta)
         input_spi = StructurePredictionInput(**schema)
 

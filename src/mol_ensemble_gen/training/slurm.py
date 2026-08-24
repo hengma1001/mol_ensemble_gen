@@ -26,8 +26,8 @@ class SlurmConfig:
     time: str = "24:00:00"
     master_port: int = 29500
     log_dir: str = "runs/finetune/logs"
-    env_setup: str = ""              # e.g. "source ~/mamba/bin/activate genAI"
-    extra_sbatch: list[str] = field(default_factory=list)   # extra #SBATCH lines
+    env_setup: str = ""  # e.g. "source ~/mamba/bin/activate genAI"
+    extra_sbatch: list[str] = field(default_factory=list)  # extra #SBATCH lines
 
 
 def render_script(config_path: str | Path, slurm: SlurmConfig) -> str:

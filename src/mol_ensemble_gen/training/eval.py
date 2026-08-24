@@ -55,7 +55,7 @@ def _pca_spread_ratio(sample_ca: np.ndarray, md_ca: np.ndarray) -> list[float]:
     md_flat = md_aligned.reshape(len(md_ca), -1)
     mean = md_flat.mean(0)
     _, _, vt = np.linalg.svd(md_flat - mean, full_matrices=False)
-    pcs = vt[:2]                                        # (2, L*3)
+    pcs = vt[:2]  # (2, L*3)
     samp_flat = _align_to_ref(sample_ca, ref).reshape(len(sample_ca), -1)
     md_proj = (md_flat - mean) @ pcs.T
     samp_proj = (samp_flat - mean) @ pcs.T
@@ -79,9 +79,7 @@ def evaluate_temperature(
     sample_ca = _load_sampled_ca(Path(sampled_dir) / f"T{int(temperature)}")
     md_ca = read_reference_ca(mdcath_dir, domain, temperature, skip=skip, max_frames=max_md_frames)
     if sample_ca.shape[1] != md_ca.shape[1]:
-        raise ValueError(
-            f"residue count mismatch: sampled {sample_ca.shape[1]} vs MD {md_ca.shape[1]}"
-        )
+        raise ValueError(f"residue count mismatch: sampled {sample_ca.shape[1]} vs MD {md_ca.shape[1]}")
 
     md_rmsf = analysis.rmsf(md_ca)
     samp_rmsf = analysis.rmsf(sample_ca)

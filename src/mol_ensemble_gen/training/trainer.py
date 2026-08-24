@@ -59,8 +59,7 @@ def _make_trainable():
         params are not registered/synced; only its stateless helpers are used.
         """
 
-        def __init__(self, diffusion_module, temp_embedder, head, scheme="edm", flow=None,
-                     spread=None):
+        def __init__(self, diffusion_module, temp_embedder, head, scheme="edm", flow=None, spread=None):
             super().__init__()
             self.diffusion_module = diffusion_module
             self.temp_embedder = temp_embedder
@@ -74,9 +73,16 @@ def _make_trainable():
 
             return diffusion_loss(
                 self._scheme,
-                self.diffusion_module, self._head, self.temp_embedder,
-                conditioning, gt_coords, atom_mask, temperature,
-                flow=self._flow, spread=self._spread, generator=generator,
+                self.diffusion_module,
+                self._head,
+                self.temp_embedder,
+                conditioning,
+                gt_coords,
+                atom_mask,
+                temperature,
+                flow=self._flow,
+                spread=self._spread,
+                generator=generator,
             )
 
     return _Trainable
@@ -252,9 +258,7 @@ def _run_validation(module, cond_cache, val_loader, n_batches, amp_dtype, device
                 mask = torch.from_numpy(batch.atom_mask).to(device)
                 # Same seed each call ⇒ same σ per position in the sequence.
                 gen = torch.Generator(device=device).manual_seed(seed + i)
-                with torch.autocast(
-                    "cuda", dtype=amp_dtype, enabled=amp_dtype is not torch.float32
-                ):
+                with torch.autocast("cuda", dtype=amp_dtype, enabled=amp_dtype is not torch.float32):
                     loss, metrics = module(cond, gt, mask, batch.temperature, generator=gen)
                 losses.append(float(loss))
                 mses.append(metrics["mse"])
@@ -281,8 +285,7 @@ def _init_wandb(cfg, cfg_dict: dict, resume_step: int):
         import wandb
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise ImportError(
-            "wandb.enabled is true but wandb is not installed "
-            "(pip install -e '.[training]' or pip install wandb)"
+            "wandb.enabled is true but wandb is not installed " "(pip install -e '.[training]' or pip install wandb)"
         ) from exc
 
     import re
@@ -337,16 +340,18 @@ def train(cfg) -> None:
 
     Trainable = _make_trainable()
     trainable = Trainable(
-        diffusion_module, temp_embedder, head,
-        scheme=cfg.optim.scheme, flow=cfg.flow, spread=cfg.spread,
+        diffusion_module,
+        temp_embedder,
+        head,
+        scheme=cfg.optim.scheme,
+        flow=cfg.flow,
+        spread=cfg.spread,
     ).to(device)
     if rank == 0:
         print(f"[train] scheme={cfg.optim.scheme}", flush=True)
 
     params = [p for p in trainable.parameters() if p.requires_grad]
-    optim = torch.optim.AdamW(
-        params, lr=cfg.optim.lr, betas=cfg.optim.betas, weight_decay=cfg.optim.weight_decay
-    )
+    optim = torch.optim.AdamW(params, lr=cfg.optim.lr, betas=cfg.optim.betas, weight_decay=cfg.optim.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(optim, _lr_lambda(cfg.optim))
     amp_dtype = _amp_dtype(cfg.amp_dtype)
     scaler = torch.cuda.amp.GradScaler() if amp_dtype is torch.float16 else None
@@ -447,10 +452,12 @@ def train(cfg) -> None:
             if rank == 0 and global_step % cfg.log_every == 0:
                 lr = sched.get_last_lr()[0]
                 avg_loss = running / (accum * cfg.log_every)
-                print(f"[train] step {global_step}/{cfg.optim.max_steps} "
-                      f"loss {avg_loss:.4f} "
-                      f"mse {metrics['mse']:.4f} sigma {metrics['sigma_mean']:.2f} lr {lr:.2e}",
-                      flush=True)
+                print(
+                    f"[train] step {global_step}/{cfg.optim.max_steps} "
+                    f"loss {avg_loss:.4f} "
+                    f"mse {metrics['mse']:.4f} sigma {metrics['sigma_mean']:.2f} lr {lr:.2e}",
+                    flush=True,
+                )
                 if wandb_run is not None:
                     log_data = {
                         "train/loss": avg_loss,
@@ -464,17 +471,21 @@ def train(cfg) -> None:
             # ranks stay in lockstep; only rank 0 reports.
             if val_loader is not None and global_step % cfg.val_every == 0:
                 val = _run_validation(
-                    trainable, cond_cache, val_loader, cfg.val_batches,
-                    amp_dtype, device, seed=cfg.seed,
+                    trainable,
+                    cond_cache,
+                    val_loader,
+                    cfg.val_batches,
+                    amp_dtype,
+                    device,
+                    seed=cfg.seed,
                 )
                 if rank == 0 and val:
-                    print(f"[train] step {global_step} "
-                          f"val_loss {val['loss']:.4f} val_mse {val['mse']:.4f}",
-                          flush=True)
+                    print(
+                        f"[train] step {global_step} " f"val_loss {val['loss']:.4f} val_mse {val['mse']:.4f}",
+                        flush=True,
+                    )
                     if wandb_run is not None:
-                        wandb_run.log(
-                            {f"val/{k}": v for k, v in val.items()}, step=global_step
-                        )
+                        wandb_run.log({f"val/{k}": v for k, v in val.items()}, step=global_step)
 
             if rank == 0 and global_step % cfg.ckpt_every == 0:
                 _save_checkpoint(ckpt_path, trainable, optim, sched, scaler, global_step, cfg_dict)

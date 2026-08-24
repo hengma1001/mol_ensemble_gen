@@ -199,7 +199,14 @@ def test_training_loss_runs_offline_against_our_modules(scheme):
     atom_mask[-3:] = False  # unmatched slots must be excluded, not zero-filled
 
     loss, metrics = diffusion_loss(
-        scheme, model, GeometryOps(), temp_embedder, cond, gt, atom_mask, 348.0,
+        scheme,
+        model,
+        GeometryOps(),
+        temp_embedder,
+        cond,
+        gt,
+        atom_mask,
+        348.0,
         flow=FlowConfig(),
     )
     loss.backward()
@@ -227,9 +234,7 @@ def test_denoiser_needs_no_esm_or_transformers():
         "bad = sorted(k for k in sys.modules if k.split('.')[0] in ('esm', 'transformers'));"
         "print('LOADED:' + ','.join(bad))"
     )
-    out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
-    ).stdout
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert "LOADED:\n" in out or out.strip().endswith("LOADED:"), out
 
 
@@ -274,15 +279,25 @@ def test_parity_with_reference_within_its_own_nondeterminism():
     mine.load_state_dict(state)
 
     raw = load_conditioning(CACHE_DIR, PARITY_DOMAIN, device=dev)
-    cond = {
-        k: (None if v is None else (v.float() if v.is_floating_point() else v))
-        for k, v in raw.items()
-    }
+    cond = {k: (None if v is None else (v.float() if v.is_floating_point() else v)) for k, v in raw.items()}
     keys = (
-        "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
-        "ref_space_uid", "tok_idx", "s_inputs", "s_trunk", "z_trunk",
-        "relative_position_encoding", "asym_id", "residue_index", "entity_id",
-        "token_index", "sym_id", "token_attention_mask",
+        "ref_pos",
+        "ref_charge",
+        "ref_mask",
+        "ref_element",
+        "ref_atom_name_chars",
+        "ref_space_uid",
+        "tok_idx",
+        "s_inputs",
+        "s_trunk",
+        "z_trunk",
+        "relative_position_encoding",
+        "asym_id",
+        "residue_index",
+        "entity_id",
+        "token_index",
+        "sym_id",
+        "token_attention_mask",
     )
     kw = {k: cond.get(k) for k in keys}
     n_atoms = cond["tok_idx"].shape[1]
@@ -290,8 +305,13 @@ def test_parity_with_reference_within_its_own_nondeterminism():
     def run(model, x, t):
         with torch.no_grad():
             return model(
-                x_noisy=x, t_hat=t, num_diffusion_samples=x.shape[0],
-                return_token_repr=False, return_atom_repr=False, inference_cache=None, **kw
+                x_noisy=x,
+                t_hat=t,
+                num_diffusion_samples=x.shape[0],
+                return_token_repr=False,
+                return_atom_repr=False,
+                inference_cache=None,
+                **kw,
             )["x_denoised"]
 
     for batch, sigma in ((1, 4.82), (2, 60.0)):
@@ -303,9 +323,7 @@ def test_parity_with_reference_within_its_own_nondeterminism():
         cross = (r1 - m1).abs().max().item()
         # Allow a small multiple of the reference's own jitter, plus a floor so a
         # coincidentally-deterministic run cannot make this vacuous.
-        assert cross <= max(4.0 * ref_self, 1e-3), (
-            f"sigma={sigma}: |ref-mine|={cross:.3e} vs |ref-ref|={ref_self:.3e}"
-        )
+        assert cross <= max(4.0 * ref_self, 1e-3), f"sigma={sigma}: |ref-mine|={cross:.3e} vs |ref-ref|={ref_self:.3e}"
         assert torch.isfinite(m1).all()
 
 
@@ -351,7 +369,7 @@ def test_augmentation_is_reproducible_with_a_generator():
 
     torch.manual_seed(0)
     a = once(1234)
-    torch.manual_seed(999)          # perturb the global stream between calls
+    torch.manual_seed(999)  # perturb the global stream between calls
     b = once(1234)
     assert torch.equal(a, b), "same generator seed must give the same augmentation"
 

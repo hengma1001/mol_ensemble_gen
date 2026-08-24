@@ -51,7 +51,7 @@ def test_sidecar_roundtrip(tmp_path):
 
 @pytest.mark.unit
 def test_merge_sidecars_sorts_and_writes(tmp_path):
-    for m in (2, 0, 1):                      # written out of order
+    for m in (2, 0, 1):  # written out of order
         execution._write_sidecar(tmp_path, m, [_member(m)])
     members = execution.merge_sidecars(tmp_path, "prot", EnsembleSpec(members=3))
     assert [m.member_idx for m in members] == [0, 1, 2]
@@ -64,6 +64,7 @@ def test_merge_sidecars_sorts_and_writes(tmp_path):
 
 def _install_fake_torch(monkeypatch):
     """Replace torch.multiprocessing.spawn with one that runs workers inline."""
+
     def fake_spawn(fn, args, nprocs, join):
         gpus, input_path, out_dir, spec, shards, model_name = args
         out = Path(out_dir)
@@ -113,7 +114,7 @@ def test_executor_restart_only_folds_pending(tmp_path, monkeypatch):
     members = ex.run(tmp_path / "prot.fasta", tmp_path, spec)
 
     assert sorted(m for s in seen["shards"] for m in s) == [3, 4, 5]  # only pending
-    assert len(members) == 6                                          # merged with prior
+    assert len(members) == 6  # merged with prior
 
 
 @pytest.mark.unit
@@ -171,7 +172,8 @@ def test_real_multi_gpu_fold(tmp_path):
     from mol_ensemble_gen.ensemble import SamplingParams
 
     spec = EnsembleSpec(
-        members=4, base_seed=1,
+        members=4,
+        base_seed=1,
         sampling=SamplingParams(num_loops=4, num_sampling_steps=20, num_diffusion_samples=1),
     )
     members = execution.LocalGPUExecutor(gpus=[0, 1]).run(example, tmp_path / "run", spec)

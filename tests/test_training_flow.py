@@ -72,9 +72,7 @@ def test_flow_sigma_coverage_matches_edm():
     # tail (σ ~ 5e3) through cancellation in (1−t), which is conditioning, not a
     # logic error — the same check in float64 agrees to ~4e-13.
     torch.testing.assert_close(flow_sigma.log(), edm_sigma.log(), rtol=0, atol=1e-3)
-    assert flow_sigma.median().item() == pytest.approx(
-        SIGMA_DATA * math.exp(TRAIN_NOISE_LOG_MEAN), rel=0.02
-    )
+    assert flow_sigma.median().item() == pytest.approx(SIGMA_DATA * math.exp(TRAIN_NOISE_LOG_MEAN), rel=0.02)
 
 
 @pytest.mark.unit
@@ -228,8 +226,7 @@ def test_film_gain_is_identity_at_init():
         # and at init the injection is a no-op on s_inputs entirely
         assert torch.allclose(a, cond["s_inputs"], atol=1e-6)
 
-    assert torch.equal(film.scale(torch.tensor([320.0, 450.0])),
-                       torch.ones(2, 451)), "gain must start at exactly 1.0"
+    assert torch.equal(film.scale(torch.tensor([320.0, 450.0])), torch.ones(2, 451)), "gain must start at exactly 1.0"
 
 
 def test_film_gain_is_multiplicative_once_trained():
@@ -241,7 +238,7 @@ def test_film_gain_is_multiplicative_once_trained():
     from mol_ensemble_gen.training.loss import inject_temperature
 
     te = build_temperature_embedder(TemperatureConfig(film=True))
-    with torch.no_grad():                      # pretend it trained: constant gain of +0.5
+    with torch.no_grad():  # pretend it trained: constant gain of +0.5
         te.gain[-1].bias.fill_(0.5)
     si = torch.randn(1, 4, 451)
     cond = {"s_inputs": si, "token_attention_mask": torch.tensor([[1.0, 1.0, 0.0, 0.0]])}
@@ -265,10 +262,12 @@ def test_internal_spread_is_rigid_invariant_and_scales():
     if torch.det(q) < 0:
         q[:, 0] *= -1
     moved = x @ q + torch.tensor([12.0, -3.0, 5.0])
-    assert torch.allclose(_internal_spread(moved, mask), base, atol=1e-3), \
-        "a rigid motion of every frame must not change the spread"
-    assert torch.allclose(_internal_spread(x * 2.0, mask), base * 2.0, rtol=1e-3), \
-        "spread is a length, so it scales linearly"
+    assert torch.allclose(
+        _internal_spread(moved, mask), base, atol=1e-3
+    ), "a rigid motion of every frame must not change the spread"
+    assert torch.allclose(
+        _internal_spread(x * 2.0, mask), base * 2.0, rtol=1e-3
+    ), "spread is a length, so it scales linearly"
     same = x[:1].expand(5, -1, -1).contiguous()
     assert float(_internal_spread(same, mask)) < 1e-3, "identical frames have no spread"
 

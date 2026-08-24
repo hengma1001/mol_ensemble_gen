@@ -21,12 +21,12 @@ from .ensemble import EnsembleSpec, ESMFold2Ensemble, SamplingParams
 class RunConfig:
     """A full ensemble run, as loaded from YAML."""
 
-    input: str                              # path to a .fasta or Boltz-style .yaml
+    input: str  # path to a .fasta or Boltz-style .yaml
     out_dir: str = "runs/ensemble"
     model_name: str = "biohub/ESMFold2"
     device: str = "cuda"
-    ensemble: dict[str, Any] = field(default_factory=dict)   # members, base_seed
-    sampling: dict[str, Any] = field(default_factory=dict)   # SamplingParams knobs
+    ensemble: dict[str, Any] = field(default_factory=dict)  # members, base_seed
+    sampling: dict[str, Any] = field(default_factory=dict)  # SamplingParams knobs
     execution: dict[str, Any] = field(default_factory=dict)  # backend, gpus (multi-GPU)
 
 
@@ -73,9 +73,7 @@ def run(cfg: RunConfig) -> list:
         from .execution import LocalGPUExecutor
 
         gpus = gpus or [0]
-        members = LocalGPUExecutor(gpus=gpus, model_name=cfg.model_name).run(
-            cfg.input, cfg.out_dir, spec
-        )
+        members = LocalGPUExecutor(gpus=gpus, model_name=cfg.model_name).run(cfg.input, cfg.out_dir, spec)
     else:
         ens = ESMFold2Ensemble(spec, device=cfg.device, model_name=cfg.model_name)
         spi, input_id = ens.build_spi(cfg.input)
@@ -122,11 +120,15 @@ def analyze(args: argparse.Namespace) -> None:
     )
     summary = result.summary
     print(f"[analyze] {summary['n_members']} members -> {summary['n_clusters']} clusters")
-    print(f"[analyze] mean/max pairwise RMSD: {summary['mean_pairwise_rmsd']:.2f} / "
-          f"{summary['max_pairwise_rmsd']:.2f} Å   max RMSF: {summary['max_rmsf']:.2f} Å")
+    print(
+        f"[analyze] mean/max pairwise RMSD: {summary['mean_pairwise_rmsd']:.2f} / "
+        f"{summary['max_pairwise_rmsd']:.2f} Å   max RMSF: {summary['max_rmsf']:.2f} Å"
+    )
     print(f"[analyze] PC variance: {[round(v, 3) for v in summary['pca_explained_variance']]}")
-    print(f"[analyze] wrote analysis_metadata.csv, rmsd_matrix.npy, pca.csv, rmsf.csv, "
-          f"analysis_summary.json to {args.out_dir}")
+    print(
+        f"[analyze] wrote analysis_metadata.csv, rmsd_matrix.npy, pca.csv, rmsf.csv, "
+        f"analysis_summary.json to {args.out_dir}"
+    )
 
 
 def _parse_int_list(spec: str | None) -> list[int] | None:
@@ -167,8 +169,13 @@ def sample_md(args: argparse.Namespace) -> None:
     out_dir = args.out_dir or str(Path(cfg.out_dir) / "samples")
     ckpt = args.checkpoint or str(Path(cfg.out_dir) / "checkpoint.pt")
     sample_temperatures(
-        ckpt, args.input, [float(t) for t in temps], out_dir,
-        members=args.members, base_seed=args.base_seed, device=args.device or "cuda",
+        ckpt,
+        args.input,
+        [float(t) for t in temps],
+        out_dir,
+        members=args.members,
+        base_seed=args.base_seed,
+        device=args.device or "cuda",
     )
 
 
@@ -180,8 +187,10 @@ def eval_md(args: argparse.Namespace) -> None:
     cfg = load_train_config(args.config)
     temps = _parse_int_list(args.temperatures) or cfg.data.temperatures
     summary = evaluate_run(args.sampled_dir, cfg.data.mdcath_dir, args.domain, temps, skip=args.skip)
-    print(f"[eval] {args.domain}: mean RMSF Pearson {summary['mean_rmsf_pearson']}, "
-          f"spread monotonic {summary['spread_monotonic']}")
+    print(
+        f"[eval] {args.domain}: mean RMSF Pearson {summary['mean_rmsf_pearson']}, "
+        f"spread monotonic {summary['spread_monotonic']}"
+    )
 
 
 def slurm_train(args: argparse.Namespace) -> None:
@@ -209,8 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--members", type=int, default=None, help="override number of seeds")
     run_p.add_argument("--base-seed", type=int, default=None, help="override base seed")
     run_p.add_argument("--device", type=str, default=None, help="override device (e.g. cuda:0)")
-    run_p.add_argument("--gpus", type=str, default=None,
-                       help="fan members across local GPUs, e.g. '0,1,2,3,4,5,6,7'")
+    run_p.add_argument("--gpus", type=str, default=None, help="fan members across local GPUs, e.g. '0,1,2,3,4,5,6,7'")
 
     an_p = sub.add_parser("analyze", help="analyze a generated ensemble directory")
     an_p.add_argument("out_dir", type=str, help="ensemble directory (containing metadata.csv)")

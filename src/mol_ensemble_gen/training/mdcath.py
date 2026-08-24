@@ -42,10 +42,10 @@ def domain_path(mdcath_dir: str | Path, domain: str) -> Path:
 class Topology:
     """Per-domain topology derived from the embedded PDB blob."""
 
-    sequence: str                  # one-letter, length numResidues
-    md_records: list[tuple[int, str]]   # (res_idx, atom_name) per heavy atom, coord order
-    heavy_indices: np.ndarray      # (n_heavy,) indices into the full atom axis
-    n_atoms: int                   # full atom count (== numProteinAtoms)
+    sequence: str  # one-letter, length numResidues
+    md_records: list[tuple[int, str]]  # (res_idx, atom_name) per heavy atom, coord order
+    heavy_indices: np.ndarray  # (n_heavy,) indices into the full atom axis
+    n_atoms: int  # full atom count (== numProteinAtoms)
 
 
 def _parse_pdb_atoms(pdb_text: str) -> list[tuple[str, str, str, str, str, str]]:
@@ -123,8 +123,10 @@ def _find_pdb_blob(group, expected_atoms: int | None) -> str:
     best: str | None = None
     for name in ordered:
         raw = group[name][()]
-        text = raw.decode() if isinstance(raw, (bytes, bytearray)) else (
-            raw[0].decode() if isinstance(raw, np.ndarray) and raw.dtype.kind == "S" else str(raw)
+        text = (
+            raw.decode()
+            if isinstance(raw, (bytes, bytearray))
+            else (raw[0].decode() if isinstance(raw, np.ndarray) and raw.dtype.kind == "S" else str(raw))
         )
         if "ATOM" not in text and "HETATM" not in text:
             continue
@@ -221,9 +223,9 @@ class FrameBatch:
     """A micro-step's worth of frames from one (domain, temperature)."""
 
     domain: str
-    temperature: float             # Kelvin
-    gt_coords: np.ndarray          # (B, num_slots, 3) float32, Å
-    atom_mask: np.ndarray          # (num_slots,) bool — matched model slots
+    temperature: float  # Kelvin
+    gt_coords: np.ndarray  # (B, num_slots, 3) float32, Å
+    atom_mask: np.ndarray  # (num_slots,) bool — matched model slots
 
 
 def _shard(items: list, rank: int, world_size: int) -> list:
@@ -280,8 +282,19 @@ def _make_iterable_dataset():
         matched fraction or not yet featurized).
         """
 
-        def __init__(self, *, mdcath_dir, cache_dir, domains, temperatures,
-                     replicas, skip_frames, frames_per_step, rank, world_size):
+        def __init__(
+            self,
+            *,
+            mdcath_dir,
+            cache_dir,
+            domains,
+            temperatures,
+            replicas,
+            skip_frames,
+            frames_per_step,
+            rank,
+            world_size,
+        ):
             super().__init__()
             self.mdcath_dir = str(mdcath_dir)
             self.cache_dir = Path(cache_dir)
@@ -330,8 +343,8 @@ def _make_iterable_dataset():
                     n_frames = dset.shape[0]
                     frame_ids = list(range(0, n_frames, self.skip_frames))
                     for chunk in _chunks(frame_ids, self.frames_per_step):
-                        coords = dset[chunk, :, :].astype(np.float32)      # (B, n_atoms, 3)
-                        gt = amap.scatter_batch(coords[:, heavy, :])       # (B, num_slots, 3)
+                        coords = dset[chunk, :, :].astype(np.float32)  # (B, n_atoms, 3)
+                        gt = amap.scatter_batch(coords[:, heavy, :])  # (B, num_slots, 3)
                         yield FrameBatch(
                             domain=domain,
                             temperature=float(temp),

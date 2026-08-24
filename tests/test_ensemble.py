@@ -56,10 +56,10 @@ def _ensemble(spec: EnsembleSpec, results_per_fold) -> ESMFold2Ensemble:
 @pytest.mark.unit
 def test_derive_seed_is_deterministic_and_unique():
     a = derive_seed(42, "P1", 0)
-    assert a == derive_seed(42, "P1", 0)            # reproducible
-    assert a != derive_seed(42, "P1", 1)            # varies by member
-    assert a != derive_seed(42, "P2", 0)            # varies by input
-    assert 0 <= a < 2**31                           # int32-safe positive
+    assert a == derive_seed(42, "P1", 0)  # reproducible
+    assert a != derive_seed(42, "P1", 1)  # varies by member
+    assert a != derive_seed(42, "P2", 0)  # varies by input
+    assert 0 <= a < 2**31  # int32-safe positive
 
 
 @pytest.mark.unit
@@ -82,7 +82,7 @@ def test_generate_handles_single_result(tmp_path):
     members = ens.generate(spi=None, input_id="mono", out_dir=tmp_path)
 
     assert len(members) == 3
-    assert all(m.iptm is None for m in members)                 # monomer -> None, not a crash
+    assert all(m.iptm is None for m in members)  # monomer -> None, not a crash
     cifs = sorted(p.name for p in tmp_path.glob("*.cif"))
     assert cifs == ["mono_m0000_s00.cif", "mono_m0001_s00.cif", "mono_m0002_s00.cif"]  # unique names
 
@@ -94,7 +94,7 @@ def test_generate_handles_list_results_and_metadata(tmp_path):
 
     members = ens.generate(spi=None, input_id="cplx", out_dir=tmp_path)
 
-    assert len(members) == 4                                    # 2 seeds x 2 samples
+    assert len(members) == 4  # 2 seeds x 2 samples
     assert len(list(tmp_path.glob("*.cif"))) == 4
     assert {m.sample_idx for m in members} == {0, 1}
 

@@ -18,12 +18,12 @@ import numpy as np
 class AtomArray:
     """Flat per-atom arrays for the ``ATOM`` records of one structure."""
 
-    chain_id: np.ndarray   # (N,) str
-    res_seq: np.ndarray    # (N,) int   (label_seq_id)
-    res_name: np.ndarray   # (N,) str
+    chain_id: np.ndarray  # (N,) str
+    res_seq: np.ndarray  # (N,) int   (label_seq_id)
+    res_name: np.ndarray  # (N,) str
     atom_name: np.ndarray  # (N,) str
-    coords: np.ndarray     # (N, 3) float
-    b_factor: np.ndarray   # (N,) float  (pLDDT for ESMFold2 output)
+    coords: np.ndarray  # (N, 3) float
+    b_factor: np.ndarray  # (N,) float  (pLDDT for ESMFold2 output)
 
     def __len__(self) -> int:
         return len(self.coords)
@@ -62,8 +62,16 @@ def parse_cif_atoms(path: str | Path) -> AtomArray:
         raise ValueError(f"no _atom_site loop found in {path}")
 
     idx = {f: k for k, f in enumerate(fields)}
-    required = ("group_PDB", "label_atom_id", "label_comp_id", "label_asym_id",
-                "label_seq_id", "Cartn_x", "Cartn_y", "Cartn_z")
+    required = (
+        "group_PDB",
+        "label_atom_id",
+        "label_comp_id",
+        "label_asym_id",
+        "label_seq_id",
+        "Cartn_x",
+        "Cartn_y",
+        "Cartn_z",
+    )
     missing = [f for f in required if f not in idx]
     if missing:
         raise ValueError(f"{path}: _atom_site loop missing columns {missing}")
@@ -82,10 +90,10 @@ def parse_cif_atoms(path: str | Path) -> AtomArray:
         res_seq=np.array([int(v) for v in column("label_seq_id")]),
         res_name=np.array(column("label_comp_id")),
         atom_name=np.array(column("label_atom_id")),
-        coords=np.array([[float(r[idx["Cartn_x"]]), float(r[idx["Cartn_y"]]), float(r[idx["Cartn_z"]])]
-                         for r in atom_rows]),
-        b_factor=np.array([float(r[idx[b_key]]) for r in atom_rows]) if b_key in idx
-        else np.zeros(len(atom_rows)),
+        coords=np.array(
+            [[float(r[idx["Cartn_x"]]), float(r[idx["Cartn_y"]]), float(r[idx["Cartn_z"]])] for r in atom_rows]
+        ),
+        b_factor=np.array([float(r[idx[b_key]]) for r in atom_rows]) if b_key in idx else np.zeros(len(atom_rows)),
     )
 
 

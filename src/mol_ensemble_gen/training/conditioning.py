@@ -52,8 +52,7 @@ def _make_module():
         by a 2-layer MLP whose output layer is zero-initialized (identity at init).
         """
 
-        def __init__(self, embed_dim: int, hidden_dim: int, num_fourier: int, norm: TempNorm,
-                     film: bool = False):
+        def __init__(self, embed_dim: int, hidden_dim: int, num_fourier: int, norm: TempNorm, film: bool = False):
             super().__init__()
             self.norm = norm
             self.film = bool(film)
@@ -83,9 +82,9 @@ def _make_module():
 
         def features(self, temp_kelvin):
             t = torch.as_tensor(temp_kelvin, dtype=self.freqs.dtype, device=self.freqs.device)
-            t = t.reshape(-1)                                  # (B,)
-            tn = self.norm(t)[:, None] * self.freqs[None, :]   # (B, F)
-            return torch.cat([tn.sin(), tn.cos()], dim=-1)     # (B, 2F)
+            t = t.reshape(-1)  # (B,)
+            tn = self.norm(t)[:, None] * self.freqs[None, :]  # (B, F)
+            return torch.cat([tn.sin(), tn.cos()], dim=-1)  # (B, 2F)
 
         def forward(self, temp_kelvin):
             """Return the additive bias ``(B, embed_dim)`` for temperatures ``(B,)``."""
@@ -99,8 +98,7 @@ def _make_module():
             """
             f = self.features(temp_kelvin)
             if not self.film:
-                return torch.ones(f.shape[0], self.mlp[-1].out_features,
-                                  dtype=f.dtype, device=f.device)
+                return torch.ones(f.shape[0], self.mlp[-1].out_features, dtype=f.dtype, device=f.device)
             return 1.0 + self.gain(f)
 
     return _TemperatureEmbedder

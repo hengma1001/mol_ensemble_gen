@@ -33,12 +33,12 @@ def test_load_config_and_build_spec(tmp_path):
 
     cfg = load_config(cfg_path)
     assert cfg.input == "examples/example.fasta"
-    assert cfg.model_name == "biohub/ESMFold2"    # default applied
+    assert cfg.model_name == "biohub/ESMFold2"  # default applied
 
     spec = build_spec(cfg)
     assert spec.members == 5
     assert spec.base_seed == 7
-    assert spec.size == 10                          # 5 seeds x 2 diffusion samples
+    assert spec.size == 10  # 5 seeds x 2 diffusion samples
     assert spec.sampling.num_loops == 3
     assert spec.sampling.lm_dropout == 0.3
 

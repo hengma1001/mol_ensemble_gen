@@ -33,9 +33,7 @@ def derive_seed(base_seed: int, input_id: str, member_idx: int) -> int:
     Stable across runs given the same ``(base_seed, input_id, member_idx)``, so an
     ensemble is reproducible and shardable across workers without coordination.
     """
-    digest = hashlib.blake2b(
-        f"{base_seed}:{input_id}:{member_idx}".encode(), digest_size=8
-    ).digest()
+    digest = hashlib.blake2b(f"{base_seed}:{input_id}:{member_idx}".encode(), digest_size=8).digest()
     return int.from_bytes(digest, "big") % (2**31)  # positive, int32-safe
 
 
@@ -51,9 +49,9 @@ class SamplingParams:
     num_loops: int = 20
     num_sampling_steps: int = 200
     num_diffusion_samples: int = 1
-    lm_dropout: float | None = None          # MC-dropout on the LM features
-    lm_mask_pct: float | None = None         # sequence masking
-    noise_scale: float | None = None         # diffusion temperature
+    lm_dropout: float | None = None  # MC-dropout on the LM features
+    lm_mask_pct: float | None = None  # sequence masking
+    noise_scale: float | None = None  # diffusion temperature
     step_scale: float | None = None
     max_inference_sigma: float | None = None
     msa_max_depth: int | None = None
@@ -67,7 +65,7 @@ class SamplingParams:
 class EnsembleSpec:
     """How large an ensemble to draw and with what sampling."""
 
-    members: int = 10          # number of independent seeds
+    members: int = 10  # number of independent seeds
     base_seed: int = 0
     sampling: SamplingParams = field(default_factory=SamplingParams)
 
@@ -165,9 +163,7 @@ class ESMFold2Ensemble:
             )
         return records
 
-    def generate(
-        self, spi: StructurePredictionInput, input_id: str, out_dir: str | Path
-    ) -> list[EnsembleMember]:
+    def generate(self, spi: StructurePredictionInput, input_id: str, out_dir: str | Path) -> list[EnsembleMember]:
         """Draw the full ensemble for one input on this device and write it out.
 
         Writes one ``.cif`` per (member, diffusion sample) with a unique name,
@@ -256,9 +252,7 @@ class ESMFold2Ensemble:
         return self.generate(spi, Path(input_yaml).stem, out_dir)
 
 
-def write_manifest(
-    out_dir: str | Path, input_id: str, spec: EnsembleSpec, members: list[EnsembleMember]
-) -> None:
+def write_manifest(out_dir: str | Path, input_id: str, spec: EnsembleSpec, members: list[EnsembleMember]) -> None:
     """Write ``manifest.json`` (spec + provenance) and ``metadata.csv``.
 
     Members are sorted by (member_idx, sample_idx) so output ordering is stable

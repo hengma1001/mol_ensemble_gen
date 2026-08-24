@@ -29,16 +29,16 @@ TRAIN_NOISE_LOG_STD: float = 1.5
 class DataConfig:
     """Where the mdCATH HDF5 files live and how to stream them."""
 
-    mdcath_dir: str = "mdcath"               # dir of mdcath_dataset_<domain>.h5
-    cache_dir: str = "cache/featurized"      # per-domain conditioning caches
-    domains: list[str] = field(default_factory=list)   # explicit list, or...
-    domains_file: str | None = None          # ...a text file, one domain id per line
+    mdcath_dir: str = "mdcath"  # dir of mdcath_dataset_<domain>.h5
+    cache_dir: str = "cache/featurized"  # per-domain conditioning caches
+    domains: list[str] = field(default_factory=list)  # explicit list, or...
+    domains_file: str | None = None  # ...a text file, one domain id per line
     temperatures: list[int] = field(default_factory=lambda: list(TEMPERATURES))
-    replicas: list[int] | None = None        # None = all 5 replicas
-    skip_frames: int = 10                     # stride when streaming trajectory frames
-    frames_per_step: int = 8                  # frames per optimizer micro-step (one domain+T)
-    max_len: int | None = None                # skip domains longer than this (residues)
-    min_matched_fraction: float = 0.98        # drop domains whose atom map is worse
+    replicas: list[int] | None = None  # None = all 5 replicas
+    skip_frames: int = 10  # stride when streaming trajectory frames
+    frames_per_step: int = 8  # frames per optimizer micro-step (one domain+T)
+    max_len: int | None = None  # skip domains longer than this (residues)
+    min_matched_fraction: float = 0.98  # drop domains whose atom map is worse
     val_domains: list[str] = field(default_factory=list)  # held out from training
 
 
@@ -47,7 +47,7 @@ class ModelConfig:
     """ESMFold2 backbone identity + trunk-cache depth."""
 
     model_name: str = "biohub/ESMFold2"
-    num_loops: int = 20                       # trunk recycles when caching conditioning
+    num_loops: int = 20  # trunk recycles when caching conditioning
     #: Which denoiser implementation to train.
     #:
     #: * ``"ours"`` (default) — :mod:`mol_ensemble_gen.model.denoiser`, loaded with
@@ -68,11 +68,11 @@ class ModelConfig:
 class TemperatureConfig:
     """Normalization for the temperature embedder input."""
 
-    ref: float = 379.0                        # centering temperature (K), mdCATH mid-point
-    scale: float = 65.0                       # ~std of the five temperatures (K)
-    embed_dim: int = 451                      # must equal s_inputs channel dim (c_s_inputs)
+    ref: float = 379.0  # centering temperature (K), mdCATH mid-point
+    scale: float = 65.0  # ~std of the five temperatures (K)
+    embed_dim: int = 451  # must equal s_inputs channel dim (c_s_inputs)
     hidden_dim: int = 256
-    num_fourier: int = 32                     # Fourier features of normalized T
+    num_fourier: int = 32  # Fourier features of normalized T
     #: Add a multiplicative (FiLM) gain alongside the additive bias.
     #:
     #: The additive-only bias is a poor actuator for the thing temperature has to
@@ -103,8 +103,8 @@ class SpreadConfig:
     temperature — so the term is temperature-dependent with no new conditioning.
     """
 
-    weight: float = 0.0                       # 0 → exactly the previous behaviour
-    atoms: int = 192                          # probe atoms for the distance matrix
+    weight: float = 0.0  # 0 → exactly the previous behaviour
+    atoms: int = 192  # probe atoms for the distance matrix
     #: Only apply the term for ``σ <= sigma_max``. This gate is load-bearing, not a
     #: tuning knob: matching the *full* MD spread is only a valid target where the
     #: posterior is data-dominated. Measured log(pred/gt) on the best checkpoint is
@@ -148,15 +148,15 @@ class OptimConfig:
     and ``grad_clip: 1.0`` (its grad norms peaked at 0.75, never clipping).
     """
 
-    lr: float = 1e-5                          # flow-tuned; use 1e-4 for edm
+    lr: float = 1e-5  # flow-tuned; use 1e-4 for edm
     weight_decay: float = 0.01
     betas: tuple[float, float] = (0.9, 0.999)
-    grad_clip: float = 35.0                   # flow-tuned (≈p85); use 1.0 for edm
+    grad_clip: float = 35.0  # flow-tuned (≈p85); use 1.0 for edm
     warmup_steps: int = 500
     max_steps: int = 50_000
     grad_accum: int = 4
-    lr_min_ratio: float = 0.05                # cosine floor as a fraction of lr
-    scheme: str = "flow"                      # training/sampling scheme: "flow" | "edm"
+    lr_min_ratio: float = 0.05  # cosine floor as a fraction of lr
+    scheme: str = "flow"  # training/sampling scheme: "flow" | "edm"
 
 
 @dataclass
@@ -170,21 +170,21 @@ class FlowConfig:
     MSE by ``1/t²``.
     """
 
-    time_dist: str = "logitnormal"            # "logitnormal" (lnσ~N) | "uniform" (t~U)
-    p_mean: float = TRAIN_NOISE_LOG_MEAN      # logit-normal mean of ln σ
-    p_std: float = TRAIN_NOISE_LOG_STD        # logit-normal std of ln σ
-    weighting: str = "velocity"               # "velocity" (1/t²) | "data" (unit)
-    t_min: float = 1e-3                        # clamp t∈[t_min,1−t_min] (tames 1/t²)
-    num_sampling_steps: int = 50              # ODE integration steps
-    sampler: str = "euler"                    # "euler" | "heun" (2nd-order)
+    time_dist: str = "logitnormal"  # "logitnormal" (lnσ~N) | "uniform" (t~U)
+    p_mean: float = TRAIN_NOISE_LOG_MEAN  # logit-normal mean of ln σ
+    p_std: float = TRAIN_NOISE_LOG_STD  # logit-normal std of ln σ
+    weighting: str = "velocity"  # "velocity" (1/t²) | "data" (unit)
+    t_min: float = 1e-3  # clamp t∈[t_min,1−t_min] (tames 1/t²)
+    num_sampling_steps: int = 50  # ODE integration steps
+    sampler: str = "euler"  # "euler" | "heun" (2nd-order)
     #: How the sampling σ grid is spaced. "karras" is the EDM ρ-schedule (roughly
     #: geometric in σ); "uniform_t" walks the flow time linearly, which collapses
     #: the entire high-σ range into the first step — with sigma_max=256 and 50
     #: steps it jumps 256 → 41, so the mode-selecting part of the trajectory gets
     #: one step at a noise level covering 0.4% of training draws.
-    schedule: str = "karras"                  # "karras" | "uniform_t"
-    rho: float = 7.0                          # Karras schedule exponent
-    sigma_max: float = 256.0                   # start noise level (t_max=σ/(1+σ))
+    schedule: str = "karras"  # "karras" | "uniform_t"
+    rho: float = 7.0  # Karras schedule exponent
+    sigma_max: float = 256.0  # start noise level (t_max=σ/(1+σ))
     #: Per-temperature override of ``sigma_max``, e.g. ``{320: 256, 450: 64}``.
     #:
     #: **Measured not to help — left in place as a general knob and as the record of
@@ -221,11 +221,11 @@ class WandbConfig:
 
     enabled: bool = False
     project: str = "mol-ensemble-gen"
-    entity: str | None = None                 # W&B team/user; None = default
-    run_name: str | None = None               # display name; None = W&B auto-name
-    id: str | None = None                     # resume key; None = derived from out_dir
+    entity: str | None = None  # W&B team/user; None = default
+    run_name: str | None = None  # display name; None = W&B auto-name
+    id: str | None = None  # resume key; None = derived from out_dir
     tags: list[str] = field(default_factory=list)
-    mode: str = "online"                      # online | offline | disabled
+    mode: str = "online"  # online | offline | disabled
 
 
 @dataclass
@@ -241,7 +241,7 @@ class TrainConfig:
     flow: FlowConfig = field(default_factory=FlowConfig)  # used when optim.scheme=="flow"
     spread: SpreadConfig = field(default_factory=SpreadConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
-    amp_dtype: str = "bfloat16"               # bfloat16 | float16 | float32
+    amp_dtype: str = "bfloat16"  # bfloat16 | float16 | float32
     log_every: int = 20
     ckpt_every: int = 1000
     #: Run the loss over ``val_batches`` micro-batches of ``data.val_domains``
@@ -249,8 +249,8 @@ class TrainConfig:
     #: distinguishes "still learning" from "overfitting three domains".
     val_every: int = 500
     val_batches: int = 16
-    resume: bool = True                       # continue from out_dir checkpoint if present
-    slurm: dict[str, Any] = field(default_factory=dict)   # SLURM resources (see slurm.py)
+    resume: bool = True  # continue from out_dir checkpoint if present
+    slurm: dict[str, Any] = field(default_factory=dict)  # SLURM resources (see slurm.py)
 
 
 def _build(dc_type: type, raw: Any) -> Any:
@@ -319,16 +319,11 @@ def _validate(cfg: TrainConfig) -> None:
     if cfg.flow.weighting not in ("velocity", "data"):
         raise ValueError(f"flow.weighting must be 'velocity' or 'data', got {cfg.flow.weighting!r}")
     if cfg.flow.schedule not in ("karras", "uniform_t"):
-        raise ValueError(
-            f"flow.schedule must be 'karras' or 'uniform_t', got {cfg.flow.schedule!r}"
-        )
+        raise ValueError(f"flow.schedule must be 'karras' or 'uniform_t', got {cfg.flow.schedule!r}")
     if cfg.flow.sampler not in ("euler", "heun"):
         raise ValueError(f"flow.sampler must be 'euler' or 'heun', got {cfg.flow.sampler!r}")
     if cfg.flow.t_conditioning not in ("off", "add", "replace"):
-        raise ValueError(
-            "flow.t_conditioning must be 'off', 'add' or 'replace', "
-            f"got {cfg.flow.t_conditioning!r}"
-        )
+        raise ValueError("flow.t_conditioning must be 'off', 'add' or 'replace', " f"got {cfg.flow.t_conditioning!r}")
     if cfg.model.backend not in ("ours", "reference"):
         raise ValueError(f"model.backend must be 'ours' or 'reference', got {cfg.model.backend!r}")
     if not cfg.model.pretrained and cfg.model.backend != "ours":
@@ -343,9 +338,7 @@ def _validate(cfg: TrainConfig) -> None:
             f"{cfg.flow.t_conditioning!r}). The reference denoiser has no flow_t input."
         )
     if cfg.wandb.mode not in ("online", "offline", "disabled"):
-        raise ValueError(
-            f"wandb.mode must be 'online', 'offline' or 'disabled', got {cfg.wandb.mode!r}"
-        )
+        raise ValueError(f"wandb.mode must be 'online', 'offline' or 'disabled', got {cfg.wandb.mode!r}")
 
 
 def resolve_domains(data: DataConfig) -> list[str]:
