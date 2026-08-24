@@ -1,0 +1,397 @@
+# Finetune ESMFold2's diffusion module to reproduce mdCATH MD ensembles,
+# conditioned on temperature. Run in the env with the fork (genAI).
+#
+# Pipeline:
+#   mol-ensemble-gen featurize-cache examples/finetune_mdcath.yaml
+#   torchrun --standalone --nproc_per_node=8 -m mol_ensemble_gen.cli finetune examples/finetune_mdcath.yaml
+#   mol-ensemble-gen sample-md examples/finetune_mdcath.yaml --input some.fasta
+#   mol-ensemble-gen eval-md   examples/finetune_mdcath.yaml --sampled-dir runs/finetune/samples --domain 1abcA00
+#
+# ---- PILOT (start here): a handful of short domains, single GPU ----
+out_dir: runs/strat270_flow              # 270 length-stratified domains
+seed: 20260728
+
+data:
+  mdcath_dir: /nfs/lambda_stor_01/homes/heng.ma/dataset/mdcath   # dir of mdcath_dataset_<domain>.h5
+  cache_dir: cache/featurized
+  # 270 training domains STRATIFIED BY LENGTH: equal counts per residue bin over
+  # 51-452 residues (median 185). Deliberately not the natural mdCATH length
+  # distribution (median 124) — the point is to cover lengths the model has never
+  # seen; every previous run trained only on 47-177 residues.
+  #
+  # 270 is sized to what a 5000-step run actually consumes: the streaming dataset
+  # walks domains sequentially at 75 micro-batches each, and 5000 steps x 4 accum
+  # = 20,000 micro-batches reaches ~267 domains. A larger set would be partly
+  # unreachable at this budget.
+  #
+  # The held-out set is IDENTICAL to the 27- and 102-domain runs so val compares.
+  domains:
+    - 1ha8A00
+    - 4tx8A01
+    - 4j2nC00
+    - 2aujD04
+    - 2w9mA04
+    - 4wczA02
+    - 4c1nA01
+    - 3fgrA01
+    - 2k57A00
+    - 2q8vB00
+    - 2d46A00
+    - 1y69U01
+    - 4qiwK00
+    - 2b97A00
+    - 2kybA00
+    - 1twfA04
+    - 2o8xA00
+    - 1on2A02
+    - 4i5sA01
+    - 1wrjA01
+    - 2dyoA02
+    - 2jfdA03
+    - 3cj8B02
+    - 3ajdA01
+    - 2lt4A00
+    - 4mb4A02
+    - 3t47A00
+    - 3t49A00
+    - 4nleA03
+    - 4oj5A01
+    - 1ft9A02
+    - 2lrrA00
+    - 2loqA01
+    - 4nphA02
+    - 2lu2A00
+    - 3l1xA01
+    - 3l9zA01
+    - 1wxpA01
+    - 2kp6A00
+    - 1wqaA04
+    - 5h1sY00
+    - 1m6nA05
+    - 4a0tA03
+    - 2lhrA00
+    - 4uqxA01
+    - 1jvmB00
+    - 3mplA02
+    - 3a35A02
+    - 4kcaA03
+    - 2lmlA00
+    - 2krhA00
+    - 2vh7A00
+    - 2llzA01
+    - 1bplA01
+    - 2vjnA02
+    - 4bx8A04
+    - 3pmgA02
+    - 2mcmA00
+    - 2nteA02
+    - 1vctA01
+    - 4v2bA00
+    - 2va0A00
+    - 2qfpA01
+    - 1ja8A02
+    - 5a2fA02
+    - 2aytA01
+    - 2i54A02
+    - 4yl4A00
+    - 3us3A01
+    - 1iu1B00
+    - 3c3wB02
+    - 3c0wA02
+    - 2k2wA00
+    - 3d9yA00
+    - 2l9wA00
+    - 2kdiA00
+    - 1wfmA00
+    - 3pt1A02
+    - 2y1jA02
+    - 1ry9A00
+    - 1qo8A01
+    - 1r9lA02
+    - 1r1mA00
+    - 3c8eB01
+    - 3rrcA02
+    - 5bqtC02
+    - 4feiA00
+    - 5e3iA02
+    - 2vzsA02
+    - 4l9mA01
+    - 4nbzA00
+    - 1w36B04
+    - 1oo0A00
+    - 1guxB00
+    - 3h0gA05
+    - 4q9dB01
+    - 4z2zB00
+    - 3ghmA03
+    - 3ikoC02
+    - 2mcfA00
+    - 153lA00
+    - 1udxA01
+    - 1s3zA00
+    - 4tjvA00
+    - 1i1iP02
+    - 1t17A00
+    - 4m0sA00
+    - 1yi9A01
+    - 4ddnA00
+    - 4etmB00
+    - 1hzmA00
+    - 3pr9A00
+    - 1f8yA00
+    - 1o70A02
+    - 1c16A01
+    - 4k30A00
+    - 3wg9A02
+    - 1eb6A00
+    - 1mkfA02
+    - 2fg6C02
+    - 2ehgA00
+    - 2wbiB03
+    - 5lnk102
+    - 3nqiA02
+    - 1s0pA01
+    - 4njmA02
+    - 1r8iA00
+    - 3p3gA02
+    - 5dzgB00
+    - 2h6tA02
+    - 3ldhA02
+    - 2g16B00
+    - 3oa8B00
+    - 3r8jA00
+    - 2yveB00
+    - 5by2A00
+    - 1v1gA00
+    - 4d8mA03
+    - 1vwxQ00
+    - 2x7jA02
+    - 1st0A02
+    - 5cqgA05
+    - 3wisA00
+    - 3fk5A01
+    - 4jvcA00
+    - 1wx0A00
+    - 2lcuA01
+    - 1fohA03
+    - 4c91A04
+    - 4tx1A00
+    - 1d0bA00
+    - 3zj0A00
+    - 1vx7P01
+    - 1r4wA01
+    - 3cpeA03
+    - 4es8B01
+    - 4cogA00
+    - 2v7gA02
+    - 1kfdA01
+    - 2jigA01
+    - 2x8rB00
+    - 3b8hB00
+    - 1dglA00
+    - 3ispA02
+    - 4o30B00
+    - 4kr6A02
+    - 4o6yB00
+    - 4ap5A01
+    - 3uoaB01
+    - 3cx5B01
+    - 2ilxA00
+    - 3u0vA00
+    - 1qwzA00
+    - 2l5aA00
+    - 2d0bA02
+    - 1bu6O01
+    - 1e6vC00
+    - 1eluA02
+    - 1z68A02
+    - 4ernA00
+    - 3i5pA03
+    - 3hzrA01
+    - 3gk0A00
+    - 2g47A01
+    - 3wuyA00
+    - 4xjxA04
+    - 1uv4A00
+    - 2vz8A04
+    - 3kraC00
+    - 3pf8A00
+    - 5j98B00
+    - 1cpoA00
+    - 3lcrB00
+    - 4kp2A01
+    - 2k4tA00
+    - 3u64A00
+    - 5g2cA00
+    - 1f8vC00
+    - 1wmdA01
+    - 3juuA00
+    - 2sqcA02
+    - 1wraA01
+    - 3lrmA01
+    - 1ia5A00
+    - 4ci8A02
+    - 4djdD01
+    - 2q0xA01
+    - 1wm1A00
+    - 1kbpA02
+    - 3kvnA01
+    - 1n95A00
+    - 1w9cA00
+    - 1gxmB00
+    - 4a4aA04
+    - 1odmA00
+    - 2okxA05
+    - 1mmuA00
+    - 3vnyA02
+    - 4bwzA00
+    - 3pvtA00
+    - 3eqnA01
+    - 2pywA02
+    - 5ac4A02
+    - 1eovA02
+    - 4asmB00
+    - 2v5wA00
+    - 4lctA00
+    - 4hdjA00
+    - 1ru4A00
+    - 2y26A01
+    - 2xn1A02
+    - 2ahfA00
+    - 2i4lA01
+    - 4qloA00
+    - 4ce7B00
+    - 1mmoB00
+    - 4i6jB02
+    - 2cu2A00
+    - 2osxA02
+    - 4u33A03
+    - 4v28A00
+    - 1ej6A01
+    - 3amrA00
+    - 3mvdK00
+    - 1rmgA00
+    - 2gfpA00
+    - 2xzhA00
+    - 2ejaA00
+    - 1bvnP01
+    - 2vz8A07
+    - 4cvuA03
+    - 2dewX03
+    - 1fp3A00
+    - 2o4vA00
+    - 3nowA01
+    - 1uh4A02
+    - 3nvnA00
+    - 5aycA00
+    - 4mgrA02
+    - 3zpjA00
+    - 3qhoA00
+    - 3n9kA00
+    - 2gjxA02
+    - 3q6kA00
+    - 4oj5A03
+    - 1oygA01
+    - 2qfyA00
+    - 1tyeA00
+    - 1f59A00
+    - 3clwA02
+  val_domains:
+    - 16pkA02
+    - 1bxrA05
+    - 2uxtA03
+    - 5gv0A00
+    - 3ml3A00
+    - 1vw4J01
+    - 1vkiA00
+  temperatures: [320, 348, 379, 413, 450]
+  replicas: null                        # null = all 5 replicas
+  skip_frames: 20                        # frame stride (pilot: coarse)
+  frames_per_step: 8                     # frames per micro-step (one domain+T)
+  max_len: 460                           # up from 220: the set now reaches 452 residues
+  min_matched_fraction: 0.98             # drop domains whose atom map is worse
+
+model:
+  model_name: biohub/ESMFold2
+  num_loops: 20                          # trunk recycles when caching conditioning
+  backend: ours                          # ours (mol_ensemble_gen.model) | reference
+
+temperature:
+  ref: 379.0                             # centering T (K)
+  scale: 65.0
+  embed_dim: 451                         # must equal c_s_inputs
+  hidden_dim: 256
+  num_fourier: 32
+
+optim:
+  # Flow-tuned, calibrated over two pilots (see OptimConfig for the table):
+  #   clip 1.0  -> 100%  of steps clipped (median norm 8.9)
+  #   clip 20.0 -> 33.6% of steps clipped (median norm 14.6, p85 32.6)
+  #   clip 35.0 -> 13.6% expected            <- current
+  # lr stays at 1e-5: the median norm is below every candidate clip, so raising
+  # the clip changes only the tail, not the median step size.
+  # For scheme: edm instead use lr: 1.0e-4 and grad_clip: 1.0.
+  lr: 1.0e-5
+  weight_decay: 0.01
+  warmup_steps: 200
+  max_steps: 5000                        # pilot: short
+  grad_accum: 4
+  grad_clip: 35.0
+  lr_min_ratio: 0.05
+  scheme: flow                           # "flow" (default) | "edm"
+
+# Flow matching (the default scheme). Reuses the pretrained EDM denoiser via
+# sigma = t/(1-t); the logit-normal draw is shifted by ln(sigma_data) so the noise
+# band matches what the model was pretrained on.
+flow:
+  # Native flow-time conditioning: "add" embeds t directly alongside the
+  # pretrained log-sigma features with a zero-init output, so step 0 is bitwise
+  # the pretrained model. "replace" drops log-sigma entirely (no identity at
+  # init, needs longer training). "off" = pretrained conditioning only.
+  t_conditioning: add
+  time_dist: logitnormal                 # "logitnormal" (ln sigma ~ N) | "uniform"
+  p_mean: -1.2                           # logit-normal mean of ln sigma (matches EDM)
+  p_std: 1.5                             # logit-normal std of ln sigma  (matches EDM)
+  weighting: velocity                    # "velocity" (1/t^2) | "data" (unit)
+  t_min: 1.0e-3                          # clamp t in [t_min, 1-t_min]
+  num_sampling_steps: 50                 # ODE integration steps (sampling)
+  sampler: euler                         # "euler" | "heun" (2nd-order)
+  sigma_max: 256.0                        # start noise level (t_max = sigma/(1+sigma))
+
+amp_dtype: bfloat16
+log_every: 20
+ckpt_every: 500
+resume: true
+
+# Experiment tracking (rank 0 only; off by default). Logs loss/mse/sigma/lr/
+# grad_norm every log_every steps. Requires `wandb` (in the training extra) and
+# `wandb login`. The run id defaults to a slug of out_dir so resume continues it.
+wandb:
+  enabled: true
+  project: mol-ensemble-gen
+  # entity: my-team                      # W&B team/user (default account if unset)
+  # run_name: pilot-edm                  # display name (W&B auto-names if unset)
+  tags: [mdcath, finetune]
+  mode: online                           # online | offline | disabled
+
+# ---- FULL RUN: swap the fields below in (multi-GPU / multi-node SLURM) ----
+# Use a domains_file listing all training domains, denser sampling, more steps:
+#
+# data:
+#   domains_file: configs/mdcath_train_domains.txt
+#   skip_frames: 5
+#   frames_per_step: 16
+#   max_len: null
+# optim:
+#   max_steps: 200000
+#   warmup_steps: 2000
+# out_dir: runs/finetune_full
+#
+# slurm:                                 # consumed by `mol-ensemble-gen slurm-train`
+#   job_name: esmfold2-finetune
+#   partition: gpu
+#   nodes: 4
+#   gpus_per_node: 8
+#   cpus_per_task: 32
+#   time: "48:00:00"
+#   env_setup: "source ~/mamba/bin/activate genAI"
