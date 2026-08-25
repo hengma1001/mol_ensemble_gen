@@ -37,15 +37,15 @@ also works as `env PYTHONPATH=src python -m mol_ensemble_gen.cli ...`.
 mol-ensemble-gen {run,analyze,featurize-cache,finetune,sample-md,eval-md,slurm-train}
 ```
 
-| command | what it does |
-| --- | --- |
-| `run` | generate an ensemble from a YAML config |
-| `analyze` | RMSD/RMSF/PCA/clustering over a finished run |
+| command             | what it does                                                  |
+| ------------------- | ------------------------------------------------------------- |
+| `run`             | generate an ensemble from a YAML config                       |
+| `analyze`         | RMSD/RMSF/PCA/clustering over a finished run                  |
 | `featurize-cache` | cache frozen-trunk conditioning + atom maps per mdCATH domain |
-| `finetune` | train the diffusion denoiser on mdCATH (flow matching or EDM) |
-| `sample-md` | sample a temperature-conditioned ensemble from a checkpoint |
-| `eval-md` | compare a sampled ensemble against the MD reference |
-| `slurm-train` | submit a finetuning job to SLURM |
+| `finetune`        | train the diffusion denoiser on mdCATH (flow matching or EDM) |
+| `sample-md`       | sample a temperature-conditioned ensemble from a checkpoint   |
+| `eval-md`         | compare a sampled ensemble against the MD reference           |
+| `slurm-train`     | submit a finetuning job to SLURM                              |
 
 ## Sampling from the pretrained model
 
