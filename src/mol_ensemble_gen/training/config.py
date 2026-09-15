@@ -40,6 +40,61 @@ class DataConfig:
     max_len: int | None = None  # skip domains longer than this (residues)
     min_matched_fraction: float = 0.98  # drop domains whose atom map is worse
     val_domains: list[str] = field(default_factory=list)  # held out from training
+    val_domains_file: str | None = None  # ...or a text file, one domain id per line
+    #: Cap the (temperature, replica, frame-chunk) units taken per domain in the
+    #: validation stream, spread across temperatures.
+    #:
+    #: Without this, validation is a lie about its own coverage: a domain yields ~88
+    #: micro-batches and the stream finishes one domain before starting the next, so
+    #: ``val_batches: 16`` reads ONE domain no matter how many are listed. With 5 units
+    #: per domain (one per temperature), ``val_batches`` divided by 5 is the number of
+    #: domains actually scored.
+    val_units_per_domain: int | None = None
+    #: Shuffle the stream instead of walking domains, temperatures, replicas and
+    #: frames in fixed order.
+    #:
+    #: **This is a correctness fix, not a tuning knob.** The stream costs ~22
+    #: optimizer steps per domain, so with a fixed order *which domains a run sees
+    #: is decided by ``max_steps``*: at 5,000 steps only ~225 domains are ever
+    #: reached, whatever the config lists. That produced at least three false null
+    #: results here — 27 -> 102 domains looked worthless, and data scaling was twice
+    #: declared exhausted when the extra data was simply unreachable. Unshuffled runs
+    #: are also biased toward the head of the domain list, and see each domain's
+    #: temperatures in blocks, so consecutive gradients are strongly correlated.
+    #:
+    #: Set ``False`` only to reproduce a run recorded before 2026-08-27.
+    shuffle: bool = True
+    #: DataLoader worker processes for the training stream.
+    #:
+    #: Measured to matter: ~36% of single-GPU step time is data loading, and the
+    #: h5 reads are the bottleneck once several DDP ranks share one NFS mount.
+    #: At 8 ranks with 2 workers the scaling is 4.5x (56% efficiency); at 4 ranks
+    #: it is 3.6x (91%), i.e. four ranks do not saturate the mount but eight do.
+    num_workers: int = 2
+    #: Base seed for the stream permutation. Combined with the epoch index and the
+    #: flat rank so every (rank, worker, epoch) gets a distinct reproducible order.
+    shuffle_seed: int = 20260827
+
+    # -- BioEmu-format MD (topology.pdb + trajs/*.xtc) ----------------------
+    #: Which reader supplies training frames: ``"mdcath"`` (HDF5, five temperatures
+    #: per domain) or ``"bioemu"`` (xtc, one state per system).
+    #:
+    #: **``bioemu`` abandons the temperature dial for that run.** Its CATH release is
+    #: single-temperature, so the embedder sees one constant input and learns a
+    #: constant bias; ``spread_monotonic`` and every temperature-response metric are
+    #: undefined. Use it to ask whether breadth alone buys a better ensemble model,
+    #: not to produce a temperature-conditioned checkpoint.
+    source: str = "mdcath"
+    bioemu_dir: str | None = None  # dataset root, e.g. .../MSR_cath2
+    bioemu_domains: list[str] = field(default_factory=list)
+    bioemu_domains_file: str | None = None  # text file, one system id per line
+    bioemu_val_domains: list[str] = field(default_factory=list)
+    bioemu_val_domains_file: str | None = None
+    #: Override every system's ``temperature_K``. ``None`` (default) reads each
+    #: system's own ``dataset.json``, which is the honest label; set this only to
+    #: deliberately relabel, and note that mislabelling teaches the embedder a
+    #: force-field difference as if it were a temperature one.
+    bioemu_temperature: float | None = None
 
 
 @dataclass
@@ -155,7 +210,22 @@ class OptimConfig:
     warmup_steps: int = 500
     max_steps: int = 50_000
     grad_accum: int = 4
-    lr_min_ratio: float = 0.05  # cosine floor as a fraction of lr
+    lr_min_ratio: float = 0.05  # floor as a fraction of lr
+    #: ``"cosine"`` (default) or ``"wsd"`` — warmup, stable, decay.
+    #:
+    #: Cosine anneals to ``lr_min_ratio`` across the whole run, which has two costs
+    #: for a long production run. It makes the run *unextendable*: raising
+    #: ``max_steps`` and resuming restarts an annealing phase, so the result is not
+    #: the same as having trained longer from the start. And every intermediate
+    #: checkpoint sits at a different learning rate, so a saturation curve built from
+    #: them confounds "more steps" with "lower LR".
+    #:
+    #: WSD holds ``lr`` constant through the middle of the run and decays only over
+    #: the last ``lr_decay_frac``. Checkpoints in the stable phase are directly
+    #: comparable, and the run can be extended by moving the decay window.
+    lr_schedule: str = "cosine"
+    #: Fraction of ``max_steps`` spent decaying, for ``lr_schedule: wsd``.
+    lr_decay_frac: float = 0.1
     scheme: str = "flow"  # training/sampling scheme: "flow" | "edm"
 
 
@@ -244,6 +314,12 @@ class TrainConfig:
     amp_dtype: str = "bfloat16"  # bfloat16 | float16 | float32
     log_every: int = 20
     ckpt_every: int = 1000
+    #: Also keep an immutable ``checkpoint_step<N>.pt`` every N steps (0 disables).
+    #: ``checkpoint.pt`` is overwritten in place, so without this a long run ends
+    #: holding only its final weights: no milestone scoring, and no fallback if
+    #: quality regresses late. Taken as a hardlink, so a snapshot costs no extra
+    #: write -- it just pins that step's inode (~1.6 GB each).
+    snapshot_every: int = 0
     #: Run the loss over ``val_batches`` micro-batches of ``data.val_domains``
     #: every N optimizer steps (0 disables). Without this there is no signal that
     #: distinguishes "still learning" from "overfitting three domains".
@@ -251,6 +327,16 @@ class TrainConfig:
     val_batches: int = 16
     resume: bool = True  # continue from out_dir checkpoint if present
     slurm: dict[str, Any] = field(default_factory=dict)  # SLURM resources (see slurm.py)
+    #: Provenance, written by the trainer into every checkpoint -- the *resolved*
+    #: training split, so what a checkpoint saw is recoverable from the checkpoint
+    #: even when the config specified it indirectly via ``domains_file``.
+    #:
+    #: It must be a declared field, not just a dict key: ``sample-md`` rebuilds a
+    #: TrainConfig from ``state["config"]`` and ``_build`` rejects unknown keys, so
+    #: recording it without declaring it made every checkpoint of the 20-epoch run
+    #: unloadable for sampling while training resume (which never rebuilds the
+    #: config) kept working. Not meant to be set by hand in a YAML.
+    resolved_domains: list[str] = field(default_factory=list)
 
 
 def _build(dc_type: type, raw: Any) -> Any:
@@ -341,6 +427,20 @@ def _validate(cfg: TrainConfig) -> None:
         raise ValueError(f"wandb.mode must be 'online', 'offline' or 'disabled', got {cfg.wandb.mode!r}")
 
 
+def resolve_val_domains(data: DataConfig) -> list[str]:
+    """Validation domains from ``val_domains`` and/or ``val_domains_file``."""
+    ids = list(data.val_domains)
+    if getattr(data, "val_domains_file", None):
+        text = Path(data.val_domains_file).read_text()
+        ids += [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+    seen, out = set(), []
+    for d in ids:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
 def resolve_domains(data: DataConfig) -> list[str]:
     """Resolve the training domain list from ``domains`` and/or ``domains_file``.
 
@@ -352,7 +452,7 @@ def resolve_domains(data: DataConfig) -> list[str]:
         text = Path(data.domains_file).read_text()
         ids += [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
     seen: set[str] = set()
-    val = set(data.val_domains)
+    val = set(resolve_val_domains(data))
     out: list[str] = []
     for d in ids:
         if d in seen or d in val:
@@ -360,6 +460,34 @@ def resolve_domains(data: DataConfig) -> list[str]:
         seen.add(d)
         out.append(d)
     return out
+
+
+def _read_id_file(path: str | None) -> list[str]:
+    """One id per line, ignoring blanks and ``#`` comments (and anything after a tab)."""
+    if not path:
+        return []
+    out = []
+    for line in Path(path).read_text().splitlines():
+        line = line.split("\t")[0].strip()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
+def resolve_bioemu_val_domains(data: DataConfig) -> list[str]:
+    """The BioEmu validation split, from the list and/or the file."""
+    ids = list(data.bioemu_val_domains) + _read_id_file(data.bioemu_val_domains_file)
+    return list(dict.fromkeys(ids))
+
+
+def resolve_bioemu_domains(data: DataConfig) -> list[str]:
+    """The BioEmu training split, with the validation systems carved out.
+
+    Mirrors :func:`resolve_domains` so one config can list every system once.
+    """
+    ids = list(data.bioemu_domains) + _read_id_file(data.bioemu_domains_file)
+    val = set(resolve_bioemu_val_domains(data))
+    return [d for d in dict.fromkeys(ids) if d not in val]
 
 
 def config_to_dict(cfg: Any) -> dict[str, Any]:

@@ -246,7 +246,15 @@ def _worker_rank(rank: int, world_size: int) -> tuple[int, int]:
     return rank * info.num_workers + info.id, world_size * info.num_workers
 
 
-def make_dataset(cfg, rank: int = 0, world_size: int = 1, domains: list[str] | None = None):
+def make_dataset(
+    cfg,
+    rank: int = 0,
+    world_size: int = 1,
+    domains: list[str] | None = None,
+    shuffle: bool | None = None,
+    units_per_domain: int | None = None,
+    seed_offset: int = 0,
+):
     """Build an :class:`MDCathDataset` from a :class:`~.config.TrainConfig`.
 
     ``domains`` overrides the resolved training split — pass
@@ -267,6 +275,15 @@ def make_dataset(cfg, rank: int = 0, world_size: int = 1, domains: list[str] | N
         frames_per_step=data.frames_per_step,
         rank=rank,
         world_size=world_size,
+        # ``shuffle=False`` is required for the validation stream: _run_validation
+        # re-iterates the loader expecting the *same* frames every call, and a
+        # per-epoch permutation silently turns that number back into noise.
+        shuffle=getattr(data, "shuffle", True) if shuffle is None else shuffle,
+        units_per_domain=units_per_domain,
+        # ``seed_offset`` is the resumed global step. The dataset's epoch counter
+        # starts at 0 on every construction, so without an offset an interrupted
+        # run replays the exact domain order it has already trained on.
+        shuffle_seed=getattr(data, "shuffle_seed", 20260827) + int(seed_offset),
     )
 
 
@@ -294,6 +311,9 @@ def _make_iterable_dataset():
             frames_per_step,
             rank,
             world_size,
+            shuffle=True,
+            shuffle_seed=20260827,
+            units_per_domain=None,
         ):
             super().__init__()
             self.mdcath_dir = str(mdcath_dir)
@@ -305,6 +325,16 @@ def _make_iterable_dataset():
             self.frames_per_step = max(1, int(frames_per_step))
             self.rank = rank
             self.world_size = world_size
+            self.shuffle = bool(shuffle)
+            self.shuffle_seed = int(shuffle_seed)
+            self.units_per_domain = units_per_domain
+            self._epoch = 0
+
+        def _rng(self, flat_rank):
+            """Per (seed, epoch, rank) generator, so orders are distinct yet reproducible."""
+            import random
+
+            return random.Random((self.shuffle_seed, self._epoch, flat_rank).__hash__())
 
         def __iter__(self):
             import h5py
@@ -313,6 +343,12 @@ def _make_iterable_dataset():
 
             flat_rank, flat_world = _worker_rank(self.rank, self.world_size)
             my_domains = _shard(self.domains, flat_rank, flat_world)
+            rng = self._rng(flat_rank)
+            if self.shuffle:
+                # Shuffle *after* sharding, so ranks keep disjoint domain sets.
+                my_domains = list(my_domains)
+                rng.shuffle(my_domains)
+            self._epoch += 1
             for domain in my_domains:
                 try:
                     amap = load_atom_map(self.cache_dir, domain)
@@ -326,9 +362,22 @@ def _make_iterable_dataset():
                 with h5py.File(path, "r") as f:
                     group = f[domain]
                     heavy = amap.heavy_indices
-                    yield from self._stream_domain(domain, group, amap, heavy)
+                    yield from self._stream_domain(domain, group, amap, heavy, rng)
 
-        def _stream_domain(self, domain, group, amap, heavy):
+        def _stream_domain(self, domain, group, amap, heavy, rng=None):
+            """Yield every (temperature, replica, frame-chunk) unit of one domain.
+
+            Units are enumerated first and then optionally shuffled, so a domain's
+            temperatures arrive interleaved rather than in blocks of ~18 consecutive
+            micro-batches at one temperature — consecutive gradients are otherwise
+            strongly correlated in temperature.
+
+            Shuffling stays *within* a domain on purpose. Interleaving units across
+            domains would need several h5 files open at once and would thrash the
+            trainer's conditioning cache, which holds only 4 domains; one domain at a
+            time keeps that cache at a 100% hit rate after the first micro-batch.
+            """
+            units = []
             for temp in self.temperatures:
                 tkey = str(temp)
                 if tkey not in group:
@@ -339,18 +388,34 @@ def _make_iterable_dataset():
                     rkey = str(repl)
                     if rkey not in tgroup or "coords" not in tgroup[rkey]:
                         continue
-                    dset = tgroup[rkey]["coords"]
-                    n_frames = dset.shape[0]
+                    n_frames = tgroup[rkey]["coords"].shape[0]
                     frame_ids = list(range(0, n_frames, self.skip_frames))
                     for chunk in _chunks(frame_ids, self.frames_per_step):
-                        coords = dset[chunk, :, :].astype(np.float32)  # (B, n_atoms, 3)
-                        gt = amap.scatter_batch(coords[:, heavy, :])  # (B, num_slots, 3)
-                        yield FrameBatch(
-                            domain=domain,
-                            temperature=float(temp),
-                            gt_coords=gt,
-                            atom_mask=amap.present_mask.copy(),
-                        )
+                        units.append((temp, rkey, chunk))
+            if self.shuffle and rng is not None:
+                rng.shuffle(units)
+            if self.units_per_domain:
+                # Round-robin over temperatures, so a capped stream still covers the
+                # whole temperature range rather than whichever came first.
+                byT = {}
+                for u in units:
+                    byT.setdefault(u[0], []).append(u)
+                picked, temps = [], sorted(byT)
+                while len(picked) < self.units_per_domain and any(byT[t] for t in temps):
+                    for t in temps:
+                        if byT[t] and len(picked) < self.units_per_domain:
+                            picked.append(byT[t].pop(0))
+                units = picked
+            for temp, rkey, chunk in units:
+                dset = group[str(temp)][rkey]["coords"]
+                coords = dset[chunk, :, :].astype(np.float32)  # (B, n_atoms, 3)
+                gt = amap.scatter_batch(coords[:, heavy, :])  # (B, num_slots, 3)
+                yield FrameBatch(
+                    domain=domain,
+                    temperature=float(temp),
+                    gt_coords=gt,
+                    atom_mask=amap.present_mask.copy(),
+                )
 
     return _MDCathDataset
 

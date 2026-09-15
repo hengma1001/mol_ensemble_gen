@@ -3,6 +3,13 @@
 # tracked, so nothing recovers them; delete them once the run they sized is out.
 examples/_*
 
+# Milestone evaluation artifacts. The small provenance files -- which domains a
+# milestone drew, the MD reference it scored against, and the scores themselves
+# -- stay tracked, because splits/README.md cites them as the record of what was
+# evaluated on which split. Only the bulky regenerable outputs are ignored.
+splits/*
+docs/mds_explained.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -152,6 +159,111 @@ wandb/
 # .claude/settings.json, or project skills/agents, should still be committed.
 .claude/settings.local.json
 
+# Figures rendered by `python docs/make_model_figure.py`: every submission
+# format (pdf/eps/svg/png/tif), the dark screen variants, and the captions the
+# script writes alongside them. The script is the source of truth, so only it
+# is tracked. model_architecture* is the superseded single-figure layout.
+docs/model_pipeline*
+docs/model_denoiser*
+docs/model_architecture*
+docs/*tex
+
+# Held-out evaluation figures, rendered by `python docs/make_eval_figures.py` from
+# the compare_*.json the evaluation writes. Same rule as the model figures: the
+# script is the source of truth, the artwork is not tracked. eval_report.tex is
+# un-ignored below because it is written by hand, not generated -- the docs/*tex
+# rule above exists for the generated *_caption.tex files.
+docs/eval_calibration*
+docs/eval_breakdown*
+docs/eval_addition_clustering*
+docs/eval_addition_mds*
+!docs/eval_report.tex
+
+# LaTeX build products from compiling the captions and docs/methods.tex.
+# (*.log is already covered above.) ".out" is docs-scoped rather than repo-wide,
+# since that extension is ambiguous outside a LaTeX build.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+docs/*.out
+
+# Job scratch. `mol-ensemble-gen slurm-train` puts logs under runs/<run>/logs,
+# which runs/ already covers; these catch sbatch's default, which writes to
+# whatever directory the job was submitted from.
+slurm-*.out
+slurm-*.err
+nohup.out
+
+# Editor and OS scratch. .vscode/ and .devcontainer/ are deliberately tracked --
+# they are part of the documented dev setup -- so they are not listed here.
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Linter cache (the mypy/pytest ones are listed further up).
+.ruff_cache/
+
+# Weights and trajectory data. Checkpoints belong under runs/ and mdCATH HDF5
+# files in the dataset directory, both already outside the tree; these stop a
+# stray multi-gigabyte file from being committed by accident.
+*.pt
+*.ckpt
+*.h5
+
+# FASTAs, wherever they live. Every one is regenerated from the topology or
+# sequence it was derived from -- `bioemu-prep` for the BioEmu systems,
+# build_reference.py for the mdCATH splits -- so a tracked copy is a second copy
+# of an input that is already tracked elsewhere. Same rule the test60_eval and
+# milestone entries above already apply, generalised.
+splits/*/fasta/
+splits/bioemu_one_cath1_fasta/
+
+# Evaluation draw dirs mirror the frozen inputs they evaluate. Track the README,
+# the arm/seed declaration and the SCORES (compare_*.json, rmsf_*.json) -- those
+# are the record of what was evaluated against what, and one of those READMEs
+# carries the folded-reference analysis. Do not track a second copy of the
+# inputs.
+splits/addition_eval*/domains.txt
+splits/addition_eval*/md_reference.csv
+splits/ckpt_*/domains.txt
+splits/ckpt_*/md_reference.csv
+splits/msr_val/domains.txt
+splits/msr_val/md_reference.csv
+
+# Rendered figures. Regenerable from their stored JSON plus the script in docs/,
+# both of which stay tracked; the binaries are the largest churn in the repo and
+# every one of them is a pure function of inputs that are already versioned.
+docs/*.png
+docs/*.pdf
+docs/*.eps
+docs/*.svg
+docs/*.tif
+
+# Evaluation result JSONs. Reversed from the entry above after review: these are
+# a pure function of the draws plus md_reference.csv, and the draws themselves
+# are not tracked, so a tracked score is a number no one can reproduce from this
+# repo alone. The written conclusions live in each dir's README, which stays.
+splits/*/compare_*.json
+splits/*/rmsf_*.json
+splits/*/scores.json
+splits/*/tags.json
+splits/*/seeds.json
+splits/*/clustering_compare.json
+
+# Figure-generating scripts and their output both stay out: the figures are
+# rebuilt from the analysis JSONs, which are themselves untracked, so tracking
+# the script alone would promise a reproducibility that does not exist.
+docs/make_*.py
+
 # One-off experiment configs. examples/ keeps only the canonical entry points --
 # config*.yaml, the prod20 pair, the MSR_cath2 pair and pretrained_baseline.yaml.
 # The 16 experiment configs (strat270, bal1200, ctrl1200, data102, edm20k, wide,
@@ -170,3 +282,13 @@ examples/finetune_mdcath_scratch.yaml
 examples/finetune_mdcath_strat270*.yaml
 examples/finetune_mdcath_train90.yaml
 examples/finetune_mdcath_wide*.yaml
+
+# Reports and figure captions. The *_report.tex sources are hand-written but
+# their only purpose is to typeset results that live in the analysis JSONs, and
+# both the JSONs and the figure scripts they cite are untracked -- so a tracked
+# report is prose no one can rebuild the artifacts for. The *_caption.tex files
+# are written by docs/make_*.py, which is itself untracked.
+docs/*report*.tex
+docs/*report*.pdf
+docs/*_caption.tex
+docs/*_results.tex

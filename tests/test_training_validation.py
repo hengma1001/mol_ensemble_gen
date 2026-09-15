@@ -153,3 +153,61 @@ def test_val_config_defaults_and_dataset_override():
     val_ds = make_dataset(cfg, rank=0, world_size=1, domains=cfg.data.val_domains)
     assert train_ds.domains == ["a"], "val domains must stay out of training"
     assert val_ds.domains == ["v1", "v2"]
+
+
+@pytest.mark.unit
+def test_validation_stream_never_shuffles(tmp_path, monkeypatch):
+    """Validation must see identical frames on every pass.
+
+    `_run_validation` re-iterates the loader expecting the same frames, so a
+    per-epoch permutation would turn the number back into noise — the same defect
+    as the unseeded augmentation, arriving through the data stream instead.
+    Training shuffles; validation must not.
+    """
+    np = pytest.importorskip("numpy")
+    h5py = pytest.importorskip("h5py")
+    pytest.importorskip("torch")
+    from mol_ensemble_gen.training import mdcath as M
+
+    md = tmp_path / "md"
+    md.mkdir()
+    for name in ("d1", "d2", "d3"):
+        with h5py.File(md / f"mdcath_dataset_{name}.h5", "w") as f:
+            g = f.create_group(name)
+            for T in (320, 450):
+                tg = g.create_group(str(T))
+                for r in (0, 1):
+                    tg.create_group(str(r)).create_dataset("coords", data=np.zeros((32, 6, 3), "f4"))
+
+    class FakeMap:
+        heavy_indices = np.arange(6)
+        present_mask = np.ones(6, bool)
+
+        def scatter_batch(self, c):
+            return c
+
+    monkeypatch.setattr(M, "domain_path", lambda d, dom: md / f"mdcath_dataset_{dom}.h5")
+    import mol_ensemble_gen.training.featurize as F
+
+    monkeypatch.setattr(F, "load_atom_map", lambda *a, **k: FakeMap())
+
+    def order(shuffle):
+        ds = M._dataset_cls()(
+            mdcath_dir=str(md),
+            cache_dir=str(tmp_path),
+            domains=["d1", "d2", "d3"],
+            temperatures=[320, 450],
+            replicas=None,
+            skip_frames=8,
+            frames_per_step=2,
+            rank=0,
+            world_size=1,
+            shuffle=shuffle,
+            shuffle_seed=5,
+        )
+        return [(b.domain, b.temperature) for b in ds], [(b.domain, b.temperature) for b in ds]
+
+    (a1, a2) = order(shuffle=False)
+    assert a1 == a2, "an unshuffled stream must repeat exactly across passes"
+    (b1, b2) = order(shuffle=True)
+    assert b1 != b2, "a shuffled stream is expected to differ across passes"

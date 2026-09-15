@@ -180,17 +180,64 @@ def sample_md(args: argparse.Namespace) -> None:
 
 
 def eval_md(args: argparse.Namespace) -> None:
-    """Score a sampled ensemble against mdCATH MD (per-temperature + monotonicity)."""
+    """Score a sampled ensemble against reference MD (per-temperature + monotonicity)."""
     from .training.config import load_train_config
-    from .training.eval import evaluate_run
+    from .training.eval import DEFAULT_SKIP, evaluate_run
 
     cfg = load_train_config(args.config)
-    temps = _parse_int_list(args.temperatures) or cfg.data.temperatures
-    summary = evaluate_run(args.sampled_dir, cfg.data.mdcath_dir, args.domain, temps, skip=args.skip)
+    md_dir = args.md_dir or cfg.data.mdcath_dir
+    skip = args.skip if args.skip is not None else DEFAULT_SKIP[args.reference]
+    temps = _parse_int_list(args.temperatures)
+    if not temps:
+        # BioEmu systems are single-temperature, so the config's mdCATH list is the
+        # wrong default there: read the state the system was actually run at.
+        if args.reference == "bioemu":
+            from .training.bioemu import resolve_root, system_temperature
+
+            temps = [int(round(system_temperature(resolve_root(md_dir), args.domain)))]
+        else:
+            temps = cfg.data.temperatures
+    summary = evaluate_run(
+        args.sampled_dir,
+        md_dir,
+        args.domain,
+        temps,
+        skip=skip,
+        max_md_frames=args.max_md_frames,
+        reference=args.reference,
+        md_temperature=args.md_temperature,
+    )
     print(
-        f"[eval] {args.domain}: mean RMSF Pearson {summary['mean_rmsf_pearson']}, "
+        f"[eval] {args.domain} vs {args.reference}: mean RMSF Pearson {summary['mean_rmsf_pearson']}, "
         f"spread monotonic {summary['spread_monotonic']}"
     )
+
+
+def bioemu_prep(args: argparse.Namespace) -> None:
+    """List BioEmu systems and write one FASTA each, ready for ``sample-md``."""
+    from .training.bioemu import (
+        available_systems,
+        read_topology,
+        resolve_root,
+        system_temperature,
+        trajectory_paths,
+        write_fasta,
+    )
+
+    root = resolve_root(args.root)
+    systems = available_systems(root)
+    if not systems:
+        print(f"[bioemu] no systems (dirs with topology.pdb) under {args.root}")
+        return
+    if args.fasta_dir:
+        write_fasta(root, systems, args.fasta_dir)
+    for system in systems:
+        n_res = len(read_topology(root, system).sequence)
+        n_traj = len(trajectory_paths(root, system))
+        print(f"{system}\t{n_res} res\t{n_traj} trajs\t{system_temperature(root, system):g} K")
+    print(f"[bioemu] {len(systems)} systems under {root}", flush=True)
+    if args.fasta_dir:
+        print(f"[bioemu] wrote {len(systems)} FASTA files to {args.fasta_dir}")
 
 
 def slurm_train(args: argparse.Namespace) -> None:
@@ -247,12 +294,36 @@ def build_parser() -> argparse.ArgumentParser:
     sm_p.add_argument("--out-dir", type=str, default=None, help="output dir (default out_dir/samples)")
     sm_p.add_argument("--device", type=str, default=None, help="device (default cuda)")
 
-    em_p = sub.add_parser("eval-md", help="score a sampled ensemble against mdCATH MD")
+    em_p = sub.add_parser("eval-md", help="score a sampled ensemble against reference MD")
     em_p.add_argument("config", type=str, help="finetuning config YAML")
     em_p.add_argument("--sampled-dir", type=str, required=True, help="dir of T<K>/ sampled ensembles")
-    em_p.add_argument("--domain", type=str, required=True, help="mdCATH domain id to compare against")
+    em_p.add_argument("--domain", type=str, required=True, help="domain/system id to compare against")
     em_p.add_argument("--temperatures", type=str, default=None, help="e.g. '320,450' (default: config temps)")
-    em_p.add_argument("--skip", type=int, default=10, help="MD frame stride when reading references")
+    em_p.add_argument(
+        "--skip",
+        type=int,
+        default=None,
+        help="MD frame stride (default: 10 for mdcath, 1 for bioemu, which is already 10 ns/frame)",
+    )
+    em_p.add_argument(
+        "--reference",
+        choices=["mdcath", "bioemu"],
+        default="mdcath",
+        help="MD reference format: mdcath h5, or bioemu topology.pdb + trajs/*.xtc",
+    )
+    em_p.add_argument("--md-dir", type=str, default=None, help="MD reference root (default: config data.mdcath_dir)")
+    em_p.add_argument("--max-md-frames", type=int, default=2000, help="cap on reference frames (evenly thinned)")
+    em_p.add_argument(
+        "--md-temperature",
+        type=float,
+        default=None,
+        help="score against this reference state instead of --temperatures "
+        "(for a model sampled outside the reference's range)",
+    )
+
+    bp_p = sub.add_parser("bioemu-prep", help="list BioEmu MD systems and write their FASTAs")
+    bp_p.add_argument("root", type=str, help="BioEmu dataset root (e.g. .../ONE_cath1)")
+    bp_p.add_argument("--fasta-dir", type=str, default=None, help="write one <system>.fasta per system here")
 
     st_p = sub.add_parser("slurm-train", help="render/submit an sbatch script for finetuning")
     st_p.add_argument("config", type=str, help="finetuning config YAML")
@@ -276,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         sample_md(args)
     elif args.command == "eval-md":
         eval_md(args)
+    elif args.command == "bioemu-prep":
+        bioemu_prep(args)
     elif args.command == "slurm-train":
         slurm_train(args)
     return 0

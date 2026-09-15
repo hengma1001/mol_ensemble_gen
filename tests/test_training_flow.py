@@ -329,3 +329,101 @@ def test_spread_term_penalises_collapse_and_vanishes_when_matched():
     collapsed = gt.mean(0, keepdim=True).expand_as(gt).contiguous()
     penalty = math.log(max(float(_internal_spread(collapsed, mask)), 1e-6) / float(sp_gt)) ** 2
     assert penalty > 1.0, "a collapsed ensemble must be penalised heavily"
+
+
+@pytest.mark.unit
+def test_wsd_schedule_is_flat_then_decays():
+    """WSD must hold the rate constant, then decay only over the tail.
+
+    Two properties matter for a long production run, and cosine has neither:
+    checkpoints taken mid-run sit at the *same* learning rate, so a saturation
+    curve built from them measures steps rather than steps-confounded-with-LR; and
+    the run can be extended by moving the decay window instead of restarting an
+    anneal.
+    """
+    import dataclasses
+
+    from mol_ensemble_gen.training.config import OptimConfig
+    from mol_ensemble_gen.training.trainer import _lr_lambda
+
+    total, warm = 100_000, 1_000
+    o = dataclasses.replace(OptimConfig(), max_steps=total, warmup_steps=warm, lr_schedule="wsd", lr_decay_frac=0.1)
+    f = _lr_lambda(o)
+
+    assert f(0) == pytest.approx(1 / warm, rel=1e-6), "warmup must start near zero"
+    assert f(warm - 1) == pytest.approx(1.0), "warmup must reach full rate"
+    stable_end = total - 10_000
+    flat = [f(s) for s in range(warm, stable_end, 5_000)]
+    assert all(x == pytest.approx(1.0) for x in flat), "stable phase must be flat"
+    # the floor is reached *at* max_steps; one step short still has 1/decay left
+    assert f(total - 1) == pytest.approx(o.lr_min_ratio, abs=1e-3), "must end at the floor"
+    assert f(total) == pytest.approx(o.lr_min_ratio, abs=1e-9), "and sit on it thereafter"
+    mid_decay = f(stable_end + 5_000)
+    assert o.lr_min_ratio < mid_decay < 1.0, "decay must be monotone through the tail"
+
+
+@pytest.mark.unit
+def test_cosine_remains_the_default_schedule():
+    """Changing the default would silently alter every existing config."""
+    import dataclasses
+
+    from mol_ensemble_gen.training.config import OptimConfig
+    from mol_ensemble_gen.training.trainer import _lr_lambda
+
+    assert OptimConfig().lr_schedule == "cosine"
+    o = dataclasses.replace(OptimConfig(), max_steps=10_000, warmup_steps=100)
+    f = _lr_lambda(o)
+    # cosine is strictly decreasing after warmup; WSD would be flat here
+    a, b = f(2_000), f(6_000)
+    assert a > b > o.lr_min_ratio, "default must still anneal across the whole run"
+
+
+@pytest.mark.unit
+def test_snapshot_survives_the_next_rolling_save(tmp_path):
+    """``checkpoint.pt`` is overwritten in place; a snapshot must keep its bytes.
+
+    Without snapshots a 68-hour run ends holding only its final weights: milestone
+    scoring at intermediate steps is impossible after the fact, and there is no
+    fallback if quality regresses late. The snapshot is a hardlink, which works
+    only because _save_checkpoint renames a temp file *over* the path (replacing
+    the directory entry, not the inode). Were it to write the file in place, every
+    snapshot would silently alias the newest weights -- so this test pins the
+    behaviour the cheap implementation depends on.
+    """
+    from mol_ensemble_gen.training.trainer import _snapshot_checkpoint
+
+    ckpt = tmp_path / "checkpoint.pt"
+
+    def save(payload):  # mirrors _save_checkpoint's tmp + rename
+        tmp = ckpt.with_suffix(".pt.tmp")
+        tmp.write_text(payload)
+        tmp.replace(ckpt)
+
+    save("step100")
+    _snapshot_checkpoint(ckpt, 100, 100)
+    snap = tmp_path / "checkpoint_step100.pt"
+    assert snap.exists()
+
+    save("step200")  # the rolling save that used to destroy step 100
+    assert snap.read_text() == "step100", "snapshot followed the overwrite"
+    assert ckpt.read_text() == "step200"
+
+    _snapshot_checkpoint(ckpt, 200, 100)
+    assert (tmp_path / "checkpoint_step200.pt").read_text() == "step200"
+
+
+@pytest.mark.unit
+def test_snapshot_every_gates_on_the_step(tmp_path):
+    """0 disables snapshots entirely; other steps are no-ops."""
+    from mol_ensemble_gen.training.trainer import _snapshot_checkpoint
+
+    ckpt = tmp_path / "checkpoint.pt"
+    ckpt.write_text("x")
+
+    _snapshot_checkpoint(ckpt, 500, 0)  # disabled
+    _snapshot_checkpoint(ckpt, 550, 100)  # not a multiple
+    assert list(tmp_path.glob("checkpoint_step*.pt")) == []
+
+    _snapshot_checkpoint(ckpt, 500, 100)
+    assert (tmp_path / "checkpoint_step500.pt").exists()
+    _snapshot_checkpoint(ckpt, 500, 100)  # idempotent, must not raise

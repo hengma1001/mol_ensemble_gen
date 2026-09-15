@@ -127,6 +127,9 @@ def test_dataset_streams_scattered_frames(tmp_path):
         frames_per_step=4,
         rank=0,
         world_size=1,
+        # This test is about frame scattering and chunk arithmetic, so the order is
+        # pinned; with the default shuffle the short trailing chunk lands anywhere.
+        shuffle=False,
     )
     batches = list(iter(ds))
     assert [b.gt_coords.shape[0] for b in batches] == [4, 4, 2]
@@ -170,6 +173,53 @@ def test_make_dataset_builds_the_lazy_class(tmp_path):
 
 
 @pytest.mark.unit
+def test_seed_offset_shifts_the_shuffle_seed(tmp_path):
+    """A resumed run must not replay the domain order it already trained on.
+
+    The dataset's epoch counter starts at 0 on every construction and the shuffle
+    is seeded on (seed, epoch, rank), so a resume rebuilt the identical order --
+    and, with the trainer's matching torch reseed, the identical sigma sequence.
+    Measured on a 4-GPU interrupt test: every logged sigma matched the pre-kill run
+    at an offset of exactly the checkpointed step. The trainer passes the resumed
+    global step as ``seed_offset``; validation must NOT get one (it relies on a
+    fixed order), so the default stays 0.
+    """
+    pytest.importorskip("torch")
+
+    def build(**kw):
+        cfg = _build(
+            TrainConfig,
+            {
+                "data": {
+                    "mdcath_dir": str(tmp_path / "md"),
+                    "cache_dir": str(tmp_path / "cache"),
+                    "domains": ["aA00"],
+                    "temperatures": [320],
+                    "shuffle_seed": 1000,
+                }
+            },
+        )
+        return mdcath.make_dataset(cfg, rank=0, world_size=1, **kw)
+
+    assert build().shuffle_seed == 1000, "default must leave the seed alone"
+    assert build(seed_offset=0).shuffle_seed == 1000
+    assert build(seed_offset=26600).shuffle_seed == 27600
+    # Distinct resume points must not collide onto one order.
+    seeds = {build(seed_offset=n).shuffle_seed for n in (0, 100, 26600, 532000)}
+    assert len(seeds) == 4
+
+
+@pytest.mark.unit
+def test_shuffled_order_actually_changes_with_the_offset(tmp_path, monkeypatch):
+    """The offset has to change the *order*, not merely a stored integer."""
+    names = ["aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh"]
+    base = _stream(tmp_path, names, shuffle=True, seed=1000, monkeypatch=monkeypatch)
+    moved = _stream(tmp_path, names, shuffle=True, seed=1000 + 26600, monkeypatch=monkeypatch)
+    assert base != moved, "offsetting the seed left the stream order unchanged"
+    assert sorted(base) == sorted(moved), "the offset changed the data, not just the order"
+
+
+@pytest.mark.unit
 def test_dataset_skips_domain_without_cache(tmp_path, capsys):
     pytest.importorskip("h5py")
     pytest.importorskip("torch")
@@ -187,3 +237,145 @@ def test_dataset_skips_domain_without_cache(tmp_path, capsys):
     )
     assert list(iter(ds)) == []
     assert "no cache for missing" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# stream shuffling
+# ---------------------------------------------------------------------------
+
+
+def _fake_domain(tmp_path, name, n_frames=48, n_atoms=6, temps=(320, 450), reps=(0, 1)):
+    """Minimal mdCATH-shaped h5 plus the atom-map cache the stream requires."""
+    h5py = pytest.importorskip("h5py")
+    np = pytest.importorskip("numpy")
+    md = tmp_path / "md"
+    md.mkdir(exist_ok=True)
+    with h5py.File(md / f"mdcath_dataset_{name}.h5", "w") as f:
+        g = f.create_group(name)
+        for T in temps:
+            tg = g.create_group(str(T))
+            for r in reps:
+                rg = tg.create_group(str(r))
+                rg.create_dataset("coords", data=np.zeros((n_frames, n_atoms, 3), "f4"))
+    return md
+
+
+def _stream(tmp_path, names, shuffle, seed=1, monkeypatch=None):
+    """Collect one full pass of (domain, temperature) pairs from the stream."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    from mol_ensemble_gen.training import mdcath as M
+
+    md = None
+    for n in names:
+        md = _fake_domain(tmp_path, n)
+
+    class FakeMap:
+        heavy_indices = np.arange(6)
+        present_mask = np.ones(6, bool)
+
+        def scatter_batch(self, c):
+            return c
+
+    monkeypatch.setattr(M, "domain_path", lambda d, dom: md / f"mdcath_dataset_{dom}.h5")
+    import mol_ensemble_gen.training.featurize as F
+
+    monkeypatch.setattr(F, "load_atom_map", lambda *a, **k: FakeMap())
+
+    ds = M._dataset_cls()(
+        mdcath_dir=str(md),
+        cache_dir=str(tmp_path),
+        domains=list(names),
+        temperatures=[320, 450],
+        replicas=None,
+        skip_frames=8,
+        frames_per_step=2,
+        rank=0,
+        world_size=1,
+        shuffle=shuffle,
+        shuffle_seed=seed,
+    )
+    return [(b.domain, b.temperature) for b in ds]
+
+
+@pytest.mark.unit
+def test_shuffle_preserves_the_data_exactly(tmp_path, monkeypatch):
+    """Shuffling must reorder, never drop or duplicate.
+
+    The stream is the only thing standing between a config's domain list and what
+    the model actually sees, so a shuffle bug that silently lost batches would be
+    invisible in the loss curve.
+    """
+    names = ["aaa", "bbb", "ccc"]
+    plain = _stream(tmp_path, names, shuffle=False, monkeypatch=monkeypatch)
+    mixed = _stream(tmp_path, names, shuffle=True, monkeypatch=monkeypatch)
+    from collections import Counter
+
+    assert Counter(plain) == Counter(mixed), "shuffling changed the multiset of batches"
+    assert plain != mixed, "shuffle=True produced the unshuffled order"
+
+
+@pytest.mark.unit
+def test_unshuffled_walks_domains_and_temperatures_in_blocks(tmp_path, monkeypatch):
+    """Documents the old behaviour, which is why shuffling was needed.
+
+    Unshuffled, a run consumes domains strictly in list order and each domain's
+    temperatures in blocks — so `max_steps` alone decides which domains are ever
+    reached, and consecutive gradients share a temperature.
+    """
+    order = _stream(tmp_path, ["aaa", "bbb"], shuffle=False, monkeypatch=monkeypatch)
+    doms = [d for d, _ in order]
+    assert doms == sorted(doms), "unshuffled stream should be in list order"
+    first_dom = [t for d, t in order if d == "aaa"]
+    assert first_dom == sorted(first_dom), "unshuffled temperatures should come in blocks"
+
+
+@pytest.mark.unit
+def test_shuffle_is_reproducible_and_varies_by_epoch(tmp_path, monkeypatch):
+    """Same seed -> same order; successive epochs -> different orders."""
+    names = ["aaa", "bbb", "ccc"]
+    a = _stream(tmp_path, names, shuffle=True, seed=7, monkeypatch=monkeypatch)
+    b = _stream(tmp_path, names, shuffle=True, seed=7, monkeypatch=monkeypatch)
+    assert a == b, "same seed must give the same order"
+    c = _stream(tmp_path, names, shuffle=True, seed=99, monkeypatch=monkeypatch)
+    assert a != c, "a different seed must give a different order"
+
+    # a second pass over the *same* dataset object must differ from the first
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    from mol_ensemble_gen.training import mdcath as M
+
+    md = None
+    for n in names:
+        md = _fake_domain(tmp_path, n)
+
+    class FakeMap:
+        heavy_indices = np.arange(6)
+        present_mask = np.ones(6, bool)
+
+        def scatter_batch(self, c):
+            return c
+
+    monkeypatch.setattr(M, "domain_path", lambda d, dom: md / f"mdcath_dataset_{dom}.h5")
+    import mol_ensemble_gen.training.featurize as F
+
+    monkeypatch.setattr(F, "load_atom_map", lambda *a, **k: FakeMap())
+    ds = M._dataset_cls()(
+        mdcath_dir=str(md),
+        cache_dir=str(tmp_path),
+        domains=names,
+        temperatures=[320, 450],
+        replicas=None,
+        skip_frames=8,
+        frames_per_step=2,
+        rank=0,
+        world_size=1,
+        shuffle=True,
+        shuffle_seed=3,
+    )
+    e1 = [(b.domain, b.temperature) for b in ds]
+    e2 = [(b.domain, b.temperature) for b in ds]
+    from collections import Counter
+
+    assert Counter(e1) == Counter(e2), "epochs must contain the same data"
+    assert e1 != e2, "consecutive epochs must not repeat the same order"

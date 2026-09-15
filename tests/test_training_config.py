@@ -176,3 +176,31 @@ def test_resolve_domains_reads_file(tmp_path):
     f.write_text("# header\nd1\n\nd2\nd1\n")
     data = DataConfig(domains=["d0"], domains_file=str(f), val_domains=["d2"])
     assert resolve_domains(data) == ["d0", "d1"]
+
+
+@pytest.mark.unit
+def test_checkpoint_config_dict_round_trips_through_build():
+    """What the trainer writes into a checkpoint must load back out.
+
+    ``sample-md`` rebuilds a TrainConfig from ``state["config"]`` via ``_build``,
+    which rejects unknown keys. The trainer records the resolved training split
+    into that dict for provenance, so a field it records but does not declare makes
+    every checkpoint unloadable for sampling -- while training resume keeps working,
+    because resume reads ``state["global_step"]`` and the module state dicts and
+    never rebuilds the config. That asymmetry hid the break through a full 73-hour
+    production run: the checkpoints were fine, only reading them back was not.
+
+    This test round-trips the dict exactly as the trainer builds it.
+    """
+    from mol_ensemble_gen.training.config import _build
+
+    cfg = TrainConfig()
+    cfg_dict = config_to_dict(cfg)
+    cfg_dict["resolved_domains"] = ["aA00", "bB01", "cC02"]  # as trainer.py does
+
+    rebuilt = _build(TrainConfig, cfg_dict)
+    assert rebuilt.resolved_domains == ["aA00", "bB01", "cC02"]
+
+    # Every key the trainer can write has to be accepted, not just this one.
+    for key in cfg_dict:
+        assert hasattr(rebuilt, key), f"checkpoint config key {key!r} is not a field"
