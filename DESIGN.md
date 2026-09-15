@@ -171,11 +171,11 @@ mol-ensemble-gen run     config.yaml --gpus 0,1,2,3
 mol-ensemble-gen analyze runs/exp1 --cluster-cutoff 2.0 --min-plddt 0.7
 
 # finetuning (§11)
-mol-ensemble-gen featurize-cache examples/finetune_mdcath.yaml
-mol-ensemble-gen finetune        examples/finetune_mdcath.yaml   # under torchrun for DDP
-mol-ensemble-gen sample-md       examples/finetune_mdcath.yaml --input some.fasta
-mol-ensemble-gen eval-md         examples/finetune_mdcath.yaml --sampled-dir ... --domain 1abcA00
-mol-ensemble-gen slurm-train     examples/finetune_mdcath.yaml [--submit]
+mol-ensemble-gen featurize-cache examples/finetune_mdcath_prod20_4gpu.yaml
+mol-ensemble-gen finetune        examples/finetune_mdcath_prod20_4gpu.yaml   # under torchrun for DDP
+mol-ensemble-gen sample-md       examples/finetune_mdcath_prod20_4gpu.yaml --input some.fasta
+mol-ensemble-gen eval-md         examples/finetune_mdcath_prod20_4gpu.yaml --sampled-dir ... --domain 1abcA00
+mol-ensemble-gen slurm-train     examples/finetune_mdcath_prod20_4gpu.yaml [--submit]
 ```
 
 Not implemented: `slurm-submit` (a SLURM *ensemble* array) and `inspect`.
@@ -197,6 +197,31 @@ Core: `esm@git+https://github.com/Biohub/esm.git` (installed; pulls `torch` +
 - Per-member seeds → reproducible inputs (CUDA kernels add minor nondeterminism).
 
 ## 9. Caveats
+
+### The reference matters more than the metric: use the folded basin for folders
+
+Fully documented in ``splits/addition_eval_folded/README.md``; repeated here because
+that file is not where anyone looks first, and the rule was once rediscovered from
+scratch at the cost of two wrong conclusions.
+
+The fast-folder targets run at or near their melting temperatures, so a reference
+drawn evenly over the whole trajectory is mostly a reference for the **unfolded**
+state: 1FME is 8.4% folded and NTL9 3.7% (NuG2, 55.3%, is the mild case). An
+ESMFold2-based model cannot produce that, so the whole-trajectory comparison scores it
+against a quantity it was never trained for. ``addition_eval`` and
+``addition_eval_n30`` hold that reference; ``addition_eval_folded`` holds the right
+one for these three. The two complexes are equilibrium runs and correctly use the
+trajectory as is.
+
+Same draws, only the reference changed (prod20 ``step532000``, 3 matched cells):
+mean |log| 1.193 -> **0.467**, bias -1.193 -> **-0.077**, and 1FME's sign flips from
+too tight to too wide. It reorders models, not just magnitudes: on the folded basin
+the pure-MSR_cath2 arms beat prod20 (0.248 / 0.324 vs 0.340), and prod20 over-clusters
+into 12.3 against the folded MD's 1 -- the reverse of the whole-trajectory ordering.
+
+**The diagnostic worth internalising: mean |log| equal to |bias| means every cell is
+off in the same direction, which is a bad reference rather than a bad model.** That
+equality sat in the stored result unnoticed.
 
 Diffusion ensembles are samples from the model's learned distribution, **not**
 Boltzmann-weighted populations. Confidence-filter members and read them as
@@ -380,14 +405,14 @@ KS distance, PCA-landscape overlap, and a **temperature-monotonicity** check
 5. Semantics → samples are model-distribution draws; temperature teaches *relative*
    spread, not calibrated free energies (§9). Frame eval as distributional overlap.
 
-### Pipeline (CLI; see `examples/finetune_mdcath.yaml`)
+### Pipeline (CLI; see `examples/finetune_mdcath_prod20_4gpu.yaml`)
 
 ```
-mol-ensemble-gen featurize-cache examples/finetune_mdcath.yaml
-torchrun --standalone --nproc_per_node=8 -m mol_ensemble_gen.cli finetune examples/finetune_mdcath.yaml
-mol-ensemble-gen slurm-train  examples/finetune_mdcath.yaml     # multi-node full run
-mol-ensemble-gen sample-md    examples/finetune_mdcath.yaml --input some.fasta
-mol-ensemble-gen eval-md      examples/finetune_mdcath.yaml --sampled-dir ... --domain 1abcA00
+mol-ensemble-gen featurize-cache examples/finetune_mdcath_prod20_4gpu.yaml
+torchrun --standalone --nproc_per_node=8 -m mol_ensemble_gen.cli finetune examples/finetune_mdcath_prod20_4gpu.yaml
+mol-ensemble-gen slurm-train  examples/finetune_mdcath_prod20_4gpu.yaml     # multi-node full run
+mol-ensemble-gen sample-md    examples/finetune_mdcath_prod20_4gpu.yaml --input some.fasta
+mol-ensemble-gen eval-md      examples/finetune_mdcath_prod20_4gpu.yaml --sampled-dir ... --domain 1abcA00
 ```
 
 Start with the **pilot** (a handful of short domains, single GPU) to validate the
@@ -523,3 +548,92 @@ peaked at 0.75 and never clipped.
 > unweighted MSE rose over training while EDM's fell. Flow is now the default
 > because it is where the work is going; whether it beats EDM is still open and
 > wants `sample-md` + `eval-md` on both checkpoints to settle.
+
+## 14. A second MD source: BioEmu's CATH release (`training/bioemu.py`)
+
+The BioEmu MD release ([Zenodo 15629740](https://doi.org/10.5281/zenodo.15629740),
+CDLA-2.0) is the same task from a different generator: all-atom CATH-domain MD, but
+`topology.pdb` + `trajs/*.xtc` instead of HDF5, one thermodynamic state instead of
+five, and amber ff99sb-ildn instead of CHARMM22\*. Both its subsets are in play for
+different reasons.
+
+**`ONE_cath1` — 50 systems, 104 µs each — is a ruler, not training data.** Every
+distributional metric in §9 (Rg KS, RMSD KS, PCA spread) is a comparison against an
+*estimate* of the MD ensemble, and mdCATH's 5×500 ns is a poor one: the protocol
+notes already flag `16pkA02`/379 K, where a single partial-unfolding replica sets
+the target. 10,421 frames at 10 ns spacing is a converged reference, so a spread
+mismatch measured against it is the model's and not the reference's.
+
+**`MSR_cath2` — 1,040 usable systems — is the breadth lever.** 868 of them are CATH domains
+mdCATH does not contain. That matters because every result in §11 points the same
+way: 102→270 length-stratified domains gave −17% where 27→102 raw gave −3%, and the
+270→1,196 comparison collapsed the *span* of held-out error from 0.221 to 0.070.
+Coverage of the input distribution is the lever; this is 868 more of it.
+
+Depth per system is not the lever, and the reason is mechanical rather than
+empirical. At `skip_frames: 20` an mdCATH domain yields 550 of its 10,980 stored
+frames, and `_stream_domain` builds the stride as `range(0, n_frames, skip)` — a
+fixed offset-0 subset that the shuffle permutes *units* of, not the offset. So a
+20-epoch run re-reads the same 550 frames twenty times and never touches the other
+95%. More frames per domain are frames the sampler cannot reach; jittering that
+offset per epoch is the cheap version of the same wish.
+
+### What single-temperature costs
+
+`data.source: bioemu` trains, but **it abandons the temperature dial**. One labelled
+state means the embedder sees a constant input and learns a constant bias, and
+`spread_monotonic` is undefined. That is a fair experiment to run on its own terms —
+does breadth alone buy a better ensemble model at matched steps — but it does not
+produce the conditioned deliverable, and mixing the two sources would label a force
+field change as a temperature change: 300 K would become the only point in the range
+that is also ff99sb-ildn.
+
+### Why the trainer did not change
+
+The loop only ever reads `batch.domain`, `batch.gt_coords`, `batch.atom_mask` and
+`batch.temperature`, and keys the featurization cache by `batch.domain`. So a source
+is fully described by a `FrameBatch` iterator plus an id namespace, and
+`training/sources.py` dispatches all three of stream, split and topology reader
+together — routing them separately is how a run ends up streaming one source's frames
+against another's cache. BioEmu ids keep their `cath2_`/`cath1_` prefix, so the 175
+CATH domains present in both releases occupy distinct cache entries, which is correct:
+same sequence, different topology, force field and temperature.
+
+Two format differences are handled in the reader because both would fail silently
+rather than loudly. xtc is in nanometres where every other coordinate in the package
+is Ångström. And xtc has no usable random access, so a domain's frames are read once
+and chunked in memory — which incidentally lets chunks shuffle across all ~39 of a
+system's trajectories rather than only within one, at ~64–110 MB resident.
+
+### The ILE CD finding
+
+ESMFold2's layout calls isoleucine's delta carbon `CD1`; CHARMM and Amber both call
+it `CD`. It was therefore unmatched and masked out of the loss in **both** sources —
+104 of 159 unmatched atoms in a 12-domain mdCATH sample, 56 of 80 in BioEmu's, i.e.
+~0.7% of all heavy atoms. `atom_map.canonical_md_atom_name` fixes it (with GROMACS's
+`OC1`/`OC2` C-terminal carboxylate), taking BioEmu topologies from 0.978–0.994
+matched to 1.0000 and lifting systems that the 0.98 guard had been dropping.
+
+It is deliberately applied **only** in `bioemu.read_topology`. mdCATH's 5,398 cached
+atom maps were built without it, so changing the shared parser would invalidate them
+and break comparability with prod20. Unmatched slots are masked rather than
+zero-filled, so what mdCATH lost was signal, not correctness — the fix is available
+there whenever a run is willing to give up that comparison, and it needs no GPU:
+`ref_mask` is already in each cached `conditioning.pt`, so the atom maps rebuild on
+CPU.
+
+### Three systems ship without trajectories
+
+`cath2_3bdlA01`, `cath2_3bpqD00` and `cath2_3dh3A01` carry a `topology.pdb` and a
+`dataset.json` but no `trajs/` at all — confirmed against the zip's own central
+directory, so it is the release rather than a partial extraction. Treating a
+topology as proof of a usable system put all three into a training split, and
+`trajectory_paths` raising inside a DataLoader worker took down all four DDP ranks
+at step ~1,300.
+
+Two changes, at different layers on purpose. `available_systems` now requires an
+actual xtc, so such a system never reaches a split. And the training stream *skips*
+a domain whose trajectories are missing, the way it already skips one with no
+featurization cache — a split built before this existed, or a half-synced mount,
+must not cost a multi-GPU run. `trajectory_paths` still raises for the eval path,
+where a specific system was named and silently scoring nothing would be worse.

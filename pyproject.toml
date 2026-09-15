@@ -37,7 +37,7 @@ spark = [
 ]
 training = [
     "h5py>=3.8",          # read mdCATH per-domain HDF5 files
-    "mdtraj>=1.9",        # optional: DSSP / secondary-structure analysis
+    "mdtraj>=1.10",       # read BioEmu-format xtc references; DSSP analysis
     "wandb>=0.16",        # optional: experiment tracking (enable via wandb.enabled)
 ]
 test = [

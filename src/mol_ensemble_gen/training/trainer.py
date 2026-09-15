@@ -37,12 +37,27 @@ def _amp_dtype(name: str):
 
 
 def _lr_lambda(cfg):
-    """Linear warmup then cosine decay to ``lr_min_ratio`` over ``max_steps``."""
+    """Linear warmup, then either cosine decay or a WSD stable-then-decay tail.
+
+    ``cosine`` anneals across the whole run. ``wsd`` holds the rate flat until the
+    last ``lr_decay_frac`` of steps and then decays linearly to ``lr_min_ratio``,
+    which keeps mid-run checkpoints comparable to each other and lets the run be
+    extended by moving the decay window rather than restarting an anneal.
+    """
+    # NB: the caller passes ``cfg.optim``, so these are OptimConfig fields.
     warmup, total, floor = cfg.warmup_steps, cfg.max_steps, cfg.lr_min_ratio
+    kind = getattr(cfg, "lr_schedule", "cosine")
+    decay = max(1, int(round(getattr(cfg, "lr_decay_frac", 0.1) * total)))
+    stable_end = max(warmup, total - decay)
 
     def fn(step: int) -> float:
         if step < warmup:
             return (step + 1) / max(1, warmup)
+        if kind == "wsd":
+            if step < stable_end:
+                return 1.0
+            prog = min(1.0, (step - stable_end) / max(1, total - stable_end))
+            return floor + (1.0 - floor) * (1.0 - prog)
         prog = min(1.0, (step - warmup) / max(1, total - warmup))
         return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * prog))
 
@@ -213,6 +228,24 @@ def _save_checkpoint(path: Path, trainable, optim, sched, scaler, step: int, cfg
     tmp.replace(path)
 
 
+def _snapshot_checkpoint(path: Path, step: int, snapshot_every: int) -> None:
+    """Hardlink an immutable ``checkpoint_step<N>.pt`` beside the rolling checkpoint.
+
+    ``_save_checkpoint`` renames a temp file over ``path``, replacing the directory
+    entry rather than the inode, so a link taken now keeps this step's bytes even
+    after the next save overwrites ``checkpoint.pt``. Costs a link, not a copy.
+    """
+    if not snapshot_every or step % snapshot_every:
+        return
+    snap = path.with_name(f"checkpoint_step{step}.pt")
+    if snap.exists():
+        return
+    try:
+        os.link(path, snap)
+    except OSError as exc:  # cross-filesystem, or links unsupported
+        print(f"[train] could not snapshot {snap.name}: {exc}", flush=True)
+
+
 def _cycle(loader):
     """Infinite iterator over a (finite) DataLoader for step-based training."""
     while True:
@@ -314,7 +347,7 @@ def train(cfg) -> None:
 
     from .config import config_to_dict
     from .conditioning import build_temperature_embedder
-    from .mdcath import make_dataset
+    from .sources import make_dataset, resolve_train_val_domains
 
     rank, world_size, local_rank, distributed = _ddp_env()
     device = f"cuda:{local_rank}"
@@ -387,31 +420,62 @@ def train(cfg) -> None:
         global_step = state["global_step"]
         if rank == 0:
             print(f"[train] resumed from {ckpt_path} at step {global_step}", flush=True)
+        # torch.manual_seed ran before the checkpoint was read, so without this a
+        # resumed run redraws the identical sigma sequence it already trained on
+        # (measured: every sigma matched at an offset of the checkpointed step).
+        torch.manual_seed(cfg.seed + rank + global_step)
 
     ddp = DDP(trainable, device_ids=[local_rank]) if distributed else trainable
 
-    dataset = make_dataset(cfg, rank=rank, world_size=world_size)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=2, pin_memory=False)
+    dataset = make_dataset(cfg, rank=rank, world_size=world_size, seed_offset=global_step)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=None,
+        num_workers=getattr(cfg.data, "num_workers", 2),
+        pin_memory=False,
+    )
     cond_cache = _CondCache(cfg.data.cache_dir, device)
 
     # Held-out stream. Built with world_size=1 and num_workers=0 so every rank
     # walks the identical frames in the identical order — the validation number is
     # then rank-independent and needs no collective.
     val_loader = None
-    if cfg.val_every > 0 and cfg.data.val_domains:
-        val_ds = make_dataset(cfg, rank=0, world_size=1, domains=cfg.data.val_domains)
+    val_domains = resolve_train_val_domains(cfg.data)[1]
+    if cfg.val_every > 0 and val_domains:
+        # shuffle=False: validation must score identical frames on every call.
+        # val_units_per_domain caps the units taken per domain so val_batches spreads
+        # across many domains instead of exhausting the first one.
+        val_ds = make_dataset(
+            cfg,
+            rank=0,
+            world_size=1,
+            domains=val_domains,
+            shuffle=False,
+            units_per_domain=cfg.data.val_units_per_domain,
+        )
         # Kept as the loader, not an iterator: _run_validation re-iterates it so
         # every evaluation scores the same frames.
         val_loader = torch.utils.data.DataLoader(val_ds, batch_size=None, num_workers=0)
         if rank == 0:
             print(
-                f"[train] validation on {cfg.data.val_domains} every "
-                f"{cfg.val_every} steps ({cfg.val_batches} batches)",
+                f"[train] validation on {len(val_domains)} domains every "
+                f"{cfg.val_every} steps ({cfg.val_batches} batches"
+                + (
+                    f", {cfg.data.val_units_per_domain} units/domain -> "
+                    f"~{cfg.val_batches // cfg.data.val_units_per_domain} domains scored)"
+                    if cfg.data.val_units_per_domain
+                    else ")"
+                ),
                 flush=True,
             )
     elif rank == 0:
         print("[train] no validation (set val_every and data.val_domains)", flush=True)
     cfg_dict = config_to_dict(cfg)
+    # Record the *resolved* split in the checkpoint, not just how it was specified.
+    # A config may name its domains via `domains_file`, in which case the config dict
+    # alone would preserve only the path — and the file can change afterwards. What a
+    # checkpoint was trained on has to be recoverable from the checkpoint.
+    cfg_dict["resolved_domains"] = list(dataset.domains)
     accum = cfg.optim.grad_accum
     wandb_run = _init_wandb(cfg, cfg_dict, global_step) if rank == 0 else None
 
@@ -455,7 +519,11 @@ def train(cfg) -> None:
                 print(
                     f"[train] step {global_step}/{cfg.optim.max_steps} "
                     f"loss {avg_loss:.4f} "
-                    f"mse {metrics['mse']:.4f} sigma {metrics['sigma_mean']:.2f} lr {lr:.2e}",
+                    f"mse {metrics['mse']:.4f} sigma {metrics['sigma_mean']:.2f} lr {lr:.2e} "
+                    # grad_norm is the value *before* clipping, so the printed series is
+                    # the true distribution — that is what `lr` and `grad_clip` are derived
+                    # from, and it has to be re-derived whenever the batch size changes.
+                    f"gnorm {float(grad_norm):.3f}",
                     flush=True,
                 )
                 if wandb_run is not None:
@@ -489,6 +557,7 @@ def train(cfg) -> None:
 
             if rank == 0 and global_step % cfg.ckpt_every == 0:
                 _save_checkpoint(ckpt_path, trainable, optim, sched, scaler, global_step, cfg_dict)
+                _snapshot_checkpoint(ckpt_path, global_step, getattr(cfg, "snapshot_every", 0))
 
     if rank == 0:
         _save_checkpoint(ckpt_path, trainable, optim, sched, scaler, global_step, cfg_dict)

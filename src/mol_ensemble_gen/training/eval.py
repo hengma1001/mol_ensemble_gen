@@ -1,7 +1,7 @@
-"""Evaluate how well a sampled ensemble reproduces mdCATH MD ensembles.
+"""Evaluate how well a sampled ensemble reproduces reference MD ensembles.
 
 Per temperature, compares a sampled ensemble (a ``T<K>/`` directory of CIFs from
-:mod:`.sample`) against held-out mdCATH Cα frames on distributional metrics that
+:mod:`.sample`) against held-out reference Cα frames on distributional metrics that
 do not assume calibrated populations — the appropriate frame for a
 model-distribution sampler (see ``DESIGN.md`` §9):
 
@@ -13,6 +13,17 @@ model-distribution sampler (see ``DESIGN.md`` §9):
 
 Reuses :mod:`mol_ensemble_gen.analysis` for geometry (``kabsch``, ``rmsf``,
 ``pairwise_rmsd``) so the sampled- and MD-side metrics are computed identically.
+
+Two reference sources are supported, selected by the ``reference`` argument:
+
+* ``"mdcath"`` (default) — :mod:`.mdcath`, five temperatures per domain. The
+  training distribution, so scores against it are in-distribution by construction.
+* ``"bioemu"`` — :mod:`.bioemu`, the BioEmu CATH release. Single-temperature
+  (~300 K) and a different force field (amber99sb-ildn vs mdCATH's CHARMM22*), so
+  it is an *out-of-distribution* benchmark on both axes. Its ONE_cath1 subset is
+  the reason to care: >100 µs per system means the distributional metrics below
+  are measured against a converged ensemble rather than a 500 ns sample of one.
+  ``spread_monotonic`` is undefined there — a single temperature is one point.
 """
 
 from __future__ import annotations
@@ -24,6 +35,35 @@ import numpy as np
 
 from .. import analysis
 from .mdcath import read_reference_ca
+
+
+def _mdcath_reference(md_dir, target, temperature, *, skip, max_frames):
+    return read_reference_ca(md_dir, target, int(temperature), skip=skip, max_frames=max_frames)
+
+
+def _bioemu_reference(md_dir, target, temperature, *, skip, max_frames):
+    from .bioemu import read_reference_ca as read_bioemu_ca
+
+    return read_bioemu_ca(md_dir, target, temperature, skip=skip, max_frames=max_frames)
+
+
+#: Reference loaders by name; each returns Cα frames ``(F, L, 3)`` in Ångström.
+REFERENCE_READERS = {"mdcath": _mdcath_reference, "bioemu": _bioemu_reference}
+
+#: Default frame stride per reference. These are *not* interchangeable: mdCATH
+#: writes frames every 1 ns, so a stride of 10 costs nothing but redundancy, while
+#: BioEmu already saves every 10 ns (``save_traj_ns`` in its ``dataset.json``) and
+#: the same stride would silently throw away 90% of an ensemble that is coarse to
+#: begin with — ~2.5k frames per system rather than ~25k.
+DEFAULT_SKIP = {"mdcath": 10, "bioemu": 1}
+
+
+def get_reference_reader(name: str):
+    """Look up a reference loader by name, erroring on an unknown one."""
+    try:
+        return REFERENCE_READERS[name]
+    except KeyError:
+        raise ValueError(f"unknown reference {name!r}; expected one of {sorted(REFERENCE_READERS)}") from None
 
 
 def radius_of_gyration(coords: np.ndarray) -> np.ndarray:
@@ -72,12 +112,24 @@ def evaluate_temperature(
     *,
     skip: int = 10,
     max_md_frames: int | None = 2000,
+    reference: str = "mdcath",
+    md_temperature: float | int | None = None,
 ) -> dict:
-    """Compute MD-match metrics for one temperature."""
+    """Compute MD-match metrics for one temperature.
+
+    ``md_temperature`` decouples the reference state from the sampled one: normally
+    both are ``temperature``, but a model trained outside the reference's range has
+    no honest single answer. Scoring mdCATH-trained weights against BioEmu's 300 K
+    ensemble needs both readings — the model asked for 300 K (extrapolating below
+    its 320-450 K training range) and asked for 320 K (its nearest trained state,
+    which will overshoot a 300 K target). Reporting one alone flatters or penalises
+    it by choice of protocol, so the result records which was used.
+    """
     from scipy.stats import ks_2samp, pearsonr, spearmanr
 
+    md_temp = temperature if md_temperature is None else md_temperature
     sample_ca = _load_sampled_ca(Path(sampled_dir) / f"T{int(temperature)}")
-    md_ca = read_reference_ca(mdcath_dir, domain, temperature, skip=skip, max_frames=max_md_frames)
+    md_ca = get_reference_reader(reference)(mdcath_dir, domain, md_temp, skip=skip, max_frames=max_md_frames)
     if sample_ca.shape[1] != md_ca.shape[1]:
         raise ValueError(f"residue count mismatch: sampled {sample_ca.shape[1]} vs MD {md_ca.shape[1]}")
 
@@ -91,6 +143,8 @@ def evaluate_temperature(
 
     return {
         "temperature": int(temperature),
+        "md_temperature": float(md_temp),
+        "reference": reference,
         "n_md_frames": int(md_ca.shape[0]),
         "n_samples": int(sample_ca.shape[0]),
         "n_res": int(md_ca.shape[1]),
@@ -115,18 +169,34 @@ def evaluate_run(
     *,
     skip: int = 10,
     write: bool = True,
+    max_md_frames: int | None = 2000,
+    reference: str = "mdcath",
+    md_temperature: float | int | None = None,
 ) -> dict:
     """Evaluate every temperature and check temperature-monotonic spread.
 
     ``spread_monotonic`` is the Spearman correlation between temperature and the
-    sampled ensemble's mean pairwise RMSD — positive means spread grows with T.
+    sampled ensemble's mean pairwise RMSD — positive means spread grows with T. It
+    stays ``None`` for a single-temperature reference such as ``"bioemu"``, where
+    there is no temperature axis to correlate against.
     """
     from scipy.stats import spearmanr
 
     per_temp = []
     for temp in temperatures:
         try:
-            per_temp.append(evaluate_temperature(sampled_dir, mdcath_dir, domain, temp, skip=skip))
+            per_temp.append(
+                evaluate_temperature(
+                    sampled_dir,
+                    mdcath_dir,
+                    domain,
+                    temp,
+                    skip=skip,
+                    max_md_frames=max_md_frames,
+                    reference=reference,
+                    md_temperature=md_temperature,
+                )
+            )
         except (KeyError, ValueError, FileNotFoundError) as exc:
             per_temp.append({"temperature": int(temp), "error": repr(exc)})
 
@@ -139,6 +209,7 @@ def evaluate_run(
 
     summary = {
         "domain": domain,
+        "reference": reference,
         "per_temperature": per_temp,
         "spread_monotonic": monotonic,
         "mean_rmsf_pearson": float(np.mean([r["rmsf_pearson"] for r in ok])) if ok else None,

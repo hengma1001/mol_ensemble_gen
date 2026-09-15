@@ -34,7 +34,7 @@ also works as `env PYTHONPATH=src python -m mol_ensemble_gen.cli ...`.
 ## CLI
 
 ```
-mol-ensemble-gen {run,analyze,featurize-cache,finetune,sample-md,eval-md,slurm-train}
+mol-ensemble-gen {run,analyze,featurize-cache,finetune,sample-md,eval-md,bioemu-prep,slurm-train}
 ```
 
 | command             | what it does                                                  |
@@ -45,6 +45,7 @@ mol-ensemble-gen {run,analyze,featurize-cache,finetune,sample-md,eval-md,slurm-t
 | `finetune`        | train the diffusion denoiser on mdCATH (flow matching or EDM) |
 | `sample-md`       | sample a temperature-conditioned ensemble from a checkpoint   |
 | `eval-md`         | compare a sampled ensemble against the MD reference           |
+| `bioemu-prep`     | list BioEmu-format MD systems and write their FASTAs          |
 | `slurm-train`     | submit a finetuning job to SLURM                              |
 
 ## Sampling from the pretrained model
@@ -109,6 +110,98 @@ mol-ensemble-gen sample-md <config> --input domain.fasta --members 30 \
 # 4. score against MD
 mol-ensemble-gen eval-md <config> --sampled-dir runs/eval/dom --domain 1abcA00
 ```
+
+## Training on BioEmu's CATH MD (MSR_cath2)
+
+`data.source: bioemu` streams training frames from the BioEmu release instead of
+mdCATH; `examples/finetune_msr_cath2_4gpu.yaml` is a complete run. The trainer is
+unchanged — [`training/sources.py`](src/mol_ensemble_gen/training/sources.py)
+dispatches the stream and the split, and `featurize-cache` follows the same field,
+so one command featurizes whichever format the run trains on.
+
+```bash
+python splits/prepare_msr_cath2.py /path/to/MSR_cath2 --n-val 50
+mol-ensemble-gen featurize-cache examples/finetune_msr_cath2_4gpu.yaml
+torchrun --standalone --nproc_per_node=4 -m mol_ensemble_gen.cli finetune \
+    examples/finetune_msr_cath2_4gpu.yaml
+```
+
+**This abandons the temperature dial for that run.** MSR_cath2 is single-state
+(300 K, amber ff99sb-ildn), so the embedder sees one constant input and learns a
+constant bias; every temperature-response metric is undefined. What it does buy:
+
+* **868 of its 1,040 usable systems (of 1,043; three ship no trajectories) are domains mdCATH does not contain** (175 overlap:
+  159 in `train_4842`, 15 in `val_496`, 1 in `test_60`). That is the breadth lever
+  the length-stratification results kept pointing at.
+* **~40 µs per system at 10 ns spacing** (~3,950 frames), against the ~550 frames
+  per domain an mdCATH epoch actually reads at `skip_frames: 20`.
+
+`splits/prepare_msr_cath2.py` forces the 16 systems that are also in
+`val_496`/`test_60` into validation, so mdCATH-trained checkpoints stay comparable
+on those sets, and draws the remaining validation slots with a seeded RNG rather
+than taking the alphabetical head.
+
+Ids are namespaced (`cath2_1a1wA00`), so BioEmu and mdCATH featurization caches
+share one directory without colliding — correct, since the two have different
+topologies, force fields and temperatures for the same CATH domain.
+
+### The ILE CD fix
+
+ESMFold2's layout calls isoleucine's delta carbon `CD1`; both CHARMM and Amber
+name it `CD`. So every ILE delta carbon was unmatched and masked out of the loss —
+104 of 159 unmatched atoms in a 12-domain mdCATH sample, 56 of 80 in BioEmu's.
+`atom_map.canonical_md_atom_name` fixes it (plus GROMACS's `OC1`/`OC2` C-terminal
+carboxylate), which takes BioEmu topologies from 0.978–0.994 matched to **1.0000**.
+
+It is applied **only on the BioEmu path**, in `bioemu.read_topology`. mdCATH's
+5,398 cached atom maps were built without it, and changing the shared parser would
+silently invalidate them and break comparability with prod20. Unmatched slots are
+masked rather than zero-filled, so the mdCATH situation is lost signal, not
+corrupted gradients.
+
+## Scoring against BioEmu's CATH MD (ONE_cath1)
+
+`eval-md --reference bioemu` reads the BioEmu MD release
+([Zenodo 15629740](https://doi.org/10.5281/zenodo.15629740), CDLA-2.0) instead of
+mdCATH: `$SYSTEM/topology.pdb` plus `$SYSTEM/trajs/*.xtc`, via `training/bioemu.py`.
+Needs `mdtraj`.
+
+```bash
+# list the systems and write one FASTA each (the sequence comes from topology.pdb,
+# so the sampled residue count matches the reference — eval-md refuses a mismatch)
+mol-ensemble-gen bioemu-prep /path/to/ONE_cath1 --fasta-dir splits/bioemu_one_cath1_fasta
+
+mol-ensemble-gen sample-md <config> --input splits/bioemu_one_cath1_fasta/cath1_3ethA03.fasta \
+    --temperatures 300 --members 30 --out-dir runs/bioemu/3ethA03
+
+mol-ensemble-gen eval-md <config> --sampled-dir runs/bioemu/3ethA03 \
+    --domain cath1_3ethA03 --reference bioemu --md-dir /path/to/ONE_cath1
+```
+
+Why bother, given the model is finetuned on mdCATH:
+
+* **The reference is converged.** ONE_cath1 gives 10,421 frames per system at
+  10 ns spacing — 104 µs cumulative, against mdCATH's 5 × 500 ns. Distribution
+  overlap (Rg KS, RMSD KS, PCA spread) measured against it means something that
+  the same numbers against a 500 ns sample do not.
+* **It is out of distribution on two axes at once**, which is the point and also
+  the caveat: 300 K sits *below* mdCATH's 320–450 K range, and the force field is
+  amber ff99sb-ildn against mdCATH's CHARMM22\*. A spread mismatch here cannot be
+  attributed to temperature transfer alone.
+* BioEmu treats 17 of these systems as its own test set, so numbers on them are
+  comparable to a published baseline.
+
+**Leakage: 38 of the 50 systems are in `splits/train_4842.txt`.** Both sets are
+CATH-derived, so most of ONE_cath1 is training sequence. `splits/one_cath1_heldout.txt`
+lists the 12 that are not (3 in `val_496`, 1 in `test_60`, 8 in neither) — score on
+those, or you are reporting training performance.
+
+Two defaults differ from the mdCATH path and are not interchangeable. `--skip`
+defaults to 1 here rather than 10, because BioEmu already saves every 10 ns
+(`save_traj_ns` in its `dataset.json`) and mdCATH's stride would silently discard
+90% of an already-coarse ensemble. And `--temperatures` defaults to the system's
+own `temperature_K` rather than the config's five, since each system was run at one
+state; `spread_monotonic` is therefore `null`.
 
 ### How it works
 
@@ -219,6 +312,7 @@ src/mol_ensemble_gen/
   training/
     config.py        # dataclass config tree + validation
     mdcath.py        # streaming mdCATH dataset
+    bioemu.py        # BioEmu-format MD references (topology.pdb + trajs/*.xtc)
     atom_map.py      # mdCATH heavy atoms -> model atom slots
     featurize.py     # frozen-trunk conditioning cache
     conditioning.py  # temperature embedder

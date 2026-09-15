@@ -64,6 +64,40 @@ _RESNAME_CANON: dict[str, str] = {
 # Atom names to ignore when reading an MD topology (terminal oxygen; any H).
 _SKIP_ATOMS = {"OXT", "OT1", "OT2", "OT"}
 
+# Force-field atom names that denote a model slot spelled differently, as
+# ``(res3 or None, ff_name) -> slot_name``; ``None`` matches any residue.
+#
+# ``ILE CD`` is the big one: both CHARMM and Amber name isoleucine's delta carbon
+# ``CD`` where ESMFold2's layout calls it ``CD1``, so without this every ILE delta
+# carbon is unmatched and masked out of the loss. It accounts for 104 of 159
+# unmatched atoms in a 12-domain mdCATH sample and 56 of 80 in BioEmu's.
+#
+# ``OC1``/``OC2`` are GROMACS's charged C-terminal carboxylate, which replaces the
+# backbone ``O``: mdtraj reads them as ``O`` + ``OXT``, so ``OC1`` takes the ``O``
+# slot and ``OC2`` is dropped as a terminal oxygen (see :data:`_SKIP_TERMINAL`).
+_ATOM_NAME_CANON: dict[tuple[str | None, str], str] = {
+    ("ILE", "CD"): "CD1",
+    (None, "OC1"): "O",
+}
+
+# Force-field atom names to drop outright, beyond :data:`_SKIP_ATOMS`.
+_SKIP_TERMINAL = {"OC2"}
+
+
+def canonical_md_atom_name(res3: str, atom_name: str) -> str | None:
+    """Fold a force-field atom name to its ESMFold2 slot name, or ``None`` to drop it.
+
+    **Not applied on the mdCATH path**, whose cached atom maps were built without
+    it; :func:`mol_ensemble_gen.training.bioemu.read_topology` applies it so the two
+    sources cannot silently diverge in an existing cache. Callers that map a whole
+    topology must keep their atom-index array in step with the dropped entries.
+    """
+    name = atom_name.strip().upper()
+    if name in _SKIP_TERMINAL:
+        return None
+    res3 = canonical_resname(res3)
+    return _ATOM_NAME_CANON.get((res3, name), _ATOM_NAME_CANON.get((None, name), name))
+
 
 def canonical_resname(name: str) -> str:
     """Fold a force-field/modified residue name to a canonical 3-letter code."""

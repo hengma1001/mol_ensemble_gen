@@ -202,12 +202,18 @@ def featurize_domain(
     min_matched_fraction: float = 0.98,
     max_len: int | None = None,
     overwrite: bool = False,
+    topology_reader=None,
 ) -> dict:
     """Featurize one domain: cache conditioning + atom map. Returns a status dict.
 
     Idempotent — skips a domain that already has a cache unless ``overwrite``.
     Domains whose atom map matches < ``min_matched_fraction`` of model atoms are
     recorded as ``dropped`` and not cached (their gradients would be unreliable).
+
+    ``topology_reader`` is a ``(dir, domain) -> Topology`` callable; it defaults to
+    mdCATH's. Everything after the topology — the atom map and the captured
+    conditioning — is derived from sequence alone, so a new MD format needs only a
+    new reader here, not a second featurization path.
     """
     import torch
 
@@ -215,7 +221,7 @@ def featurize_domain(
     if is_featurized(cache_dir, domain) and not overwrite:
         return {"domain": domain, "status": "cached"}
 
-    topo = read_topology(mdcath_dir, domain)
+    topo = (topology_reader or read_topology)(mdcath_dir, domain)
     length = len(topo.sequence)
     if max_len is not None and length > max_len:
         return {"domain": domain, "status": "too_long", "length": length}
@@ -260,19 +266,30 @@ def featurize_all(cfg, *, overwrite: bool = False, verbose: bool = True) -> list
     from esm.models.esmfold2 import ESMFold2InputBuilder
     from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 
-    from .config import resolve_domains
+    from .sources import resolve_train_val_domains
 
     device = "cuda"
     model = ESMFold2Model.from_pretrained(cfg.model.model_name).to(device).eval()
     builder = ESMFold2InputBuilder()
-    domains = resolve_domains(cfg.data) + list(cfg.data.val_domains)
+    train_ids, val_ids = resolve_train_val_domains(cfg.data)
+    domains = train_ids + [d for d in val_ids if d not in set(train_ids)]
+
+    # The topology dir and reader both follow data.source, so one command
+    # featurizes whichever MD format the run trains on.
+    if getattr(cfg.data, "source", "mdcath") == "bioemu":
+        from .bioemu import read_topology as source_reader
+        from .bioemu import resolve_root
+
+        topo_dir = str(resolve_root(cfg.data.bioemu_dir))
+    else:
+        source_reader, topo_dir = read_topology, cfg.data.mdcath_dir
 
     results: list[dict] = []
     for i, domain in enumerate(domains):
         try:
             res = featurize_domain(
                 domain,
-                mdcath_dir=cfg.data.mdcath_dir,
+                mdcath_dir=topo_dir,
                 cache_dir=cfg.data.cache_dir,
                 model=model,
                 builder=builder,
@@ -280,6 +297,7 @@ def featurize_all(cfg, *, overwrite: bool = False, verbose: bool = True) -> list
                 min_matched_fraction=cfg.data.min_matched_fraction,
                 max_len=cfg.data.max_len,
                 overwrite=overwrite,
+                topology_reader=source_reader,
             )
         except Exception as exc:  # keep going; one bad domain shouldn't kill the sweep
             res = {"domain": domain, "status": "error", "error": repr(exc)}
