@@ -96,10 +96,10 @@ shardable across workers without coordination.
 ```bash
 # 1. cache the frozen-trunk conditioning once per domain (GPU, parallelizable by
 #    sharding the domain list across configs)
-mol-ensemble-gen featurize-cache examples/finetune_mdcath_bal1200.yaml
+mol-ensemble-gen featurize-cache examples/finetune_mdcath_prod20_4gpu.yaml
 
 # 2. train the denoiser (single GPU, or torchrun for DDP)
-mol-ensemble-gen finetune examples/finetune_mdcath_bal1200.yaml
+mol-ensemble-gen finetune examples/finetune_mdcath_prod20_4gpu.yaml
 torchrun --standalone --nproc_per_node=8 -m mol_ensemble_gen.cli finetune <config>
 
 # 3. sample a held-out domain at every temperature
@@ -145,9 +145,16 @@ Atom mapping (`training/atom_map.py`) matches mdCATH heavy atoms to model slots 
 `(res_idx, atom_name)`; unmatched slots are **masked, never zero-filled**, and
 domains below `min_matched_fraction` are dropped rather than trained on.
 
-Example configs in `examples/` are named for the experiment they encode
-(`finetune_mdcath_bal1200.yaml` is the current best: 1,196 length-balanced
-domains, flow, `p_std: 2.2`, one epoch).
+Example configs in `examples/` are named for the experiment they encode, and only
+the canonical entry points are kept: `config*.yaml` for ensemble runs,
+`finetune_mdcath_prod20_{4,8}gpu.yaml`, `finetune_msr_cath2_*.yaml`, and
+`pretrained_baseline.yaml` for the un-finetuned RMSF baseline. The 16 one-off
+experiment configs (`strat270`, `bal1200`, `ctrl1200`, `data102`, `edm20k`, `wide`,
+`scratch`, ...) were **deleted** to keep `examples/` readable; recover one with
+`git show 9d1f84c:examples/<name>.yaml`. What they measured is recorded here and in
+DESIGN.md, which is the part worth keeping -- e.g. `bal1200` (1,196 length-balanced
+domains, flow, `p_std: 2.2`, one epoch) was the best single-epoch result before
+prod20.
 
 ## Evaluation protocol
 
@@ -221,7 +228,7 @@ src/mol_ensemble_gen/
     eval.py          # comparison against MD references
     slurm.py         # SLURM submission
 DESIGN.md            # architecture, rationale, and the record of what was measured
-examples/            # ensemble configs + one config per finetuning experiment
+examples/            # ensemble configs + the canonical finetuning entry points
 tests/               # offline unit tests + @pytest.mark.gpu integration tests
 ```
 

@@ -1,0 +1,164 @@
+# Production run: 20 epochs of the training split, 4 GPUs.
+#
+# splits/train_4842.txt lists 4,842 domains; 4,830 actually train -- 12 are
+# skipped at runtime by the 0.98 matched-fraction guard. All 12 fall in train,
+# so val_496 and test_60 are fully scorable.
+#
+#   torchrun --standalone --nproc_per_node=4 -m mol_ensemble_gen.cli finetune \
+#       examples/finetune_mdcath_prod20_4gpu.yaml
+#
+# max_steps IS the run length -- the loop caps on steps and the dataset cycles, so
+# epochs are emergent. DDP consumes world_size x grad_accum micro-batches per step,
+# so THIS FILE IS ONLY CORRECT AT 4 GPUs: launching it at a different
+# --nproc_per_node silently rescales the run: 532,000 steps is
+# 20 epochs at 4 GPUs but 5 at 1, 40 at 8 GPUs.
+#
+# Finetune ESMFold2's diffusion module to reproduce mdCATH MD ensembles,
+# conditioned on temperature. Run in the env with the fork (genAI).
+#
+# Pipeline:
+#   mol-ensemble-gen featurize-cache examples/finetune_mdcath_prod20_4gpu.yaml
+#   torchrun --standalone --nproc_per_node=4 -m mol_ensemble_gen.cli finetune examples/finetune_mdcath_prod20_4gpu.yaml
+#   mol-ensemble-gen sample-md examples/finetune_mdcath_prod20_4gpu.yaml --input some.fasta
+#   mol-ensemble-gen eval-md   examples/finetune_mdcath_prod20_4gpu.yaml --sampled-dir runs/prod20_4gpu/samples --domain 1abcA00
+out_dir: runs/prod20_4gpu
+seed: 20260728
+
+data:
+  mdcath_dir: /nfs/lambda_stor_01/homes/heng.ma/dataset/mdcath   # dir of mdcath_dataset_<domain>.h5
+  cache_dir: cache/featurized
+  # 270 training domains STRATIFIED BY LENGTH: equal counts per residue bin over
+  # 51-452 residues (median 185). Deliberately not the natural mdCATH length
+  # distribution (median 124) — the point is to cover lengths the model has never
+  # seen; every previous run trained only on 47-177 residues.
+  #
+  # 270 is sized to what a 5000-step run actually consumes: the streaming dataset
+  # walks domains sequentially at 75 micro-batches each, and 5000 steps x 4 accum
+  # = 20,000 micro-batches reaches ~267 domains. A larger set would be partly
+  # unreachable at this budget.
+  #
+  # The held-out set is IDENTICAL to the 27- and 102-domain runs so val compares.
+  # the training split, one domain id per line (see splits/README.md).
+  # resolve_domains() also subtracts val_domains, and the trainer records the
+  # resolved list in every checkpoint, so provenance survives the indirection.
+  domains_file: splits/train_4842.txt
+  domains: []
+  # 489 held-out domains (the sealed pool minus the 60 kept for test).
+  # 5 units per domain = one per temperature, so val_batches/5 domains are
+  # actually scored; without the cap, val_batches would exhaust ONE domain.
+  val_domains_file: splits/val_496.txt
+  val_domains: []
+  val_units_per_domain: 5
+  temperatures: [320, 348, 379, 413, 450]
+  replicas: null                        # null = all 5 replicas
+  skip_frames: 20                        # frame stride (pilot: coarse)
+  frames_per_step: 8                     # frames per micro-step (one domain+T)
+  max_len: 540                           # longest trainable domain is 519 residues
+  min_matched_fraction: 0.98             # drop domains whose atom map is worse
+  num_workers: 2                         # measured best; 8 and 16 were ~27% SLOWER
+                                         # (8 ranks x 8 workers thrash the NFS mount)
+  shuffle: true                          # load-bearing over 20 epochs: without it
+                                         # the same order replays every epoch
+
+model:
+  model_name: biohub/ESMFold2
+  num_loops: 20                          # trunk recycles when caching conditioning
+  backend: ours                          # ours (mol_ensemble_gen.model) | reference
+
+temperature:
+  ref: 379.0                             # centering T (K)
+  scale: 65.0
+  embed_dim: 451                         # must equal c_s_inputs
+  hidden_dim: 256
+  num_fourier: 32
+
+optim:
+  # Flow-tuned, calibrated over two pilots (see OptimConfig for the table):
+  #   clip 1.0  -> 100%  of steps clipped (median norm 8.9)
+  #   clip 20.0 -> 33.6% of steps clipped (median norm 14.6, p85 32.6)
+  #   clip 35.0 -> 13.6% expected            <- current
+  # lr stays at 1e-5: the median norm is below every candidate clip, so raising
+  # the clip changes only the tail, not the median step size.
+  # For scheme: edm instead use lr: 1.0e-4 and grad_clip: 1.0.
+  lr: 1.0e-5
+  weight_decay: 0.01
+  warmup_steps: 2000                     # longer for the larger batch
+  max_steps: 532000                   # 20 epochs x 4842 domains x 87.9 micro-batches / (4 ranks x 4 accum)
+                                         # The dataset streams sequentially, so a shorter run
+                                         # simply never reaches most of it: 26,500 steps would
+                                         # touch ~1,195 domains, i.e. exactly the previous set.
+                                         # 5,000 steps would reach only 225 domains (19% of
+                                         # the set), so the extra data would be unreachable
+                                         # and the experiment null by construction.
+  grad_accum: 4
+  grad_clip: 60.0                        # measured p85 at batch>=128 (CI 54-68);
+                                         # 35 clipped 37.9% of steps, 60 clips 15.5%
+  lr_min_ratio: 0.05
+  lr_schedule: wsd                       # flat through the middle so mid-run
+                                         # checkpoints are comparable, and the run
+                                         # can be extended by moving the decay
+  lr_decay_frac: 0.1
+  scheme: flow                           # "flow" (default) | "edm"
+
+# Flow matching (the default scheme). Reuses the pretrained EDM denoiser via
+# sigma = t/(1-t); the logit-normal draw is shifted by ln(sigma_data) so the noise
+# band matches what the model was pretrained on.
+flow:
+  # Native flow-time conditioning: "add" embeds t directly alongside the
+  # pretrained log-sigma features with a zero-init output, so step 0 is bitwise
+  # the pretrained model. "replace" drops log-sigma entirely (no identity at
+  # init, needs longer training). "off" = pretrained conditioning only.
+  t_conditioning: add
+  time_dist: logitnormal                 # "logitnormal" (ln sigma ~ N) | "uniform"
+  p_mean: -1.2                           # logit-normal mean of ln sigma (matches EDM)
+  p_std: 2.2                             # broadened: p95 sigma 57 -> 179 (+11% rel at 450 K on the 102-domain set)
+  weighting: velocity                    # "velocity" (1/t^2) | "data" (unit)
+  t_min: 1.0e-3                          # clamp t in [t_min, 1-t_min]
+  num_sampling_steps: 50                 # ODE integration steps (sampling)
+  sampler: euler                         # "euler" | "heun" (2nd-order)
+  sigma_max: 256.0                        # start noise level (t_max = sigma/(1+sigma))
+
+amp_dtype: bfloat16
+log_every: 20
+val_batches: 250                           # 50 domains x 5 temperatures
+val_every: 5000                            # ~0.2 epoch; 250 batches ~25 s
+ckpt_every: 26600
+snapshot_every: 26600                  # keep every rolling save as an immutable
+                                       # checkpoint_step<N>.pt (hardlink, no extra write).
+                                       # checkpoint.pt is overwritten in place, so without
+                                       # this the run ends with only its final weights:
+                                       # no milestone scoring, no late-regression fallback.
+resume: true
+
+# Experiment tracking (rank 0 only; off by default). Logs loss/mse/sigma/lr/
+# grad_norm every log_every steps. Requires `wandb` (in the training extra) and
+# `wandb login`. The run id defaults to a slug of out_dir so resume continues it.
+wandb:
+  enabled: true
+  project: mol-ensemble-gen
+  # entity: my-team                      # W&B team/user (default account if unset)
+  # run_name: pilot-edm                  # display name (W&B auto-names if unset)
+  tags: [mdcath, finetune]
+  mode: online                           # online | offline | disabled
+
+# ---- FULL RUN: swap the fields below in (multi-GPU / multi-node SLURM) ----
+# Use a domains_file listing all training domains, denser sampling, more steps:
+#
+# data:
+#   domains_file: configs/mdcath_train_domains.txt
+#   skip_frames: 5
+#   frames_per_step: 16
+#   max_len: null
+# optim:
+#   max_steps: 200000
+#   warmup_steps: 2000
+# out_dir: runs/finetune_full
+#
+# slurm:                                 # consumed by `mol-ensemble-gen slurm-train`
+#   job_name: esmfold2-finetune
+#   partition: gpu
+#   nodes: 4
+#   gpus_per_node: 8
+#   cpus_per_task: 32
+#   time: "48:00:00"
+#   env_setup: "source ~/mamba/bin/activate genAI"

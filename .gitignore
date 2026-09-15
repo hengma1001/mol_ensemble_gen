@@ -1,3 +1,8 @@
+# Underscore-prefixed configs in examples/ are throwaway probes -- preflight,
+# throughput and hyperparameter sweeps run to size a production launch. Never
+# tracked, so nothing recovers them; delete them once the run they sized is out.
+examples/_*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -146,3 +151,22 @@ wandb/
 # Claude Code per-machine settings. Only the .local file is ignored: a shared
 # .claude/settings.json, or project skills/agents, should still be committed.
 .claude/settings.local.json
+
+# One-off experiment configs. examples/ keeps only the canonical entry points --
+# config*.yaml, the prod20 pair, the MSR_cath2 pair and pretrained_baseline.yaml.
+# The 16 experiment configs (strat270, bal1200, ctrl1200, data102, edm20k, wide,
+# scratch, ...) were DELETED from examples/, not merely untracked: recover one with
+# `git show 9d1f84c:examples/<name>.yaml`. The results they produced are recorded in
+# DESIGN.md and README.md, which is the part worth keeping. The patterns stay so a
+# config recovered for a rerun does not get committed back.
+examples/finetune_mdcath.yaml
+examples/finetune_mdcath_bal1200*.yaml
+examples/finetune_mdcath_ctrl1200.yaml
+examples/finetune_mdcath_data102.yaml
+examples/finetune_mdcath_edm*.yaml
+examples/finetune_mdcath_full.yaml
+examples/finetune_mdcath_pretrained20k.yaml
+examples/finetune_mdcath_scratch.yaml
+examples/finetune_mdcath_strat270*.yaml
+examples/finetune_mdcath_train90.yaml
+examples/finetune_mdcath_wide*.yaml
