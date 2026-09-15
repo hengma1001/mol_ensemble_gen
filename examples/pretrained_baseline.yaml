@@ -1,0 +1,42 @@
+# Stock (un-finetuned) ESMFold2 baseline for the fast-folder RMSF comparison.
+#
+# Same ensemble protocol as the finetuned draws in runs/mdeval_addition_eval/ --
+# 300 members, base_seed 0, num_loops 20, num_sampling_steps 200.
+#
+# What differs, stated honestly: this is stock ESMFold2 AS IT SHIPS, so it differs from
+# the finetuned arm in three ways at once -- the weights, the sampler (its native Karras
+# SDE with stochastic churn, against the finetuned run's deterministic flow ODE) and the
+# absence of any temperature conditioning. That is the right primary baseline, because
+# "what does the un-finetuned model give you" is a question about the model as it is
+# actually used, not about one factor of it. It is NOT a weights-only ablation, and the
+# figure must not be read as one. Isolating the sampler would need a third arm -- stock
+# weights driven through flow_ode_sample, which model/flow.py supports on the reference
+# denoiser -- and has not been run.
+#
+# The confound does not threaten the headline. The finetuned model produces MORE spread
+# than the baseline while using the sampler with LESS stochasticity (gamma=0), so the
+# amplitude gap cannot be an artifact of sampler choice in the direction observed.
+#
+# There is no temperature here and there is no T<K>/ subdirectory: the pretrained
+# model has no temperature input at all, which is the point of the baseline. It
+# answers "how much of the RMSF profile agreement is finetuning, and how much did
+# ESMFold2 already have?" -- a question the finetuned-only figure cannot.
+#
+# Driven per system by splits/run_pretrained_baseline.sh (input/out_dir overridden).
+
+input: splits/addition_reference/fasta/1FME.fasta
+out_dir: runs/mdeval_addition_pretrained/pretrained_s0_1FME
+model_name: biohub/ESMFold2
+
+ensemble:
+  members: 300
+  base_seed: 0
+
+sampling:
+  num_loops: 20
+  num_sampling_steps: 200
+  num_diffusion_samples: 1
+
+execution:
+  backend: local
+  gpus: [0, 1, 2, 3, 4, 5, 6, 7]

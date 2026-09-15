@@ -1,0 +1,135 @@
+# Pure MSR_cath2 (BioEmu) finetuning, 4 GPUs -- step-matched to prod20's first
+# epoch snapshot so the two are directly comparable.
+#
+#   mol-ensemble-gen featurize-cache examples/finetune_msr_cath2_10ep_4gpu.yaml
+#   torchrun --standalone --nproc_per_node=4 -m mol_ensemble_gen.cli finetune \
+#       examples/finetune_msr_cath2_10ep_4gpu.yaml
+#
+# THIS RUN HAS NO TEMPERATURE DIAL. MSR_cath2 is single-state (300 K, amber
+# ff99sb-ildn), so the temperature embedder sees one constant input and learns a
+# constant bias. `spread_monotonic` and every temperature-response metric are
+# undefined here; `eval-md --reference bioemu` reports a single 300 K cell. The
+# question this run answers is narrower and worth asking on its own: does BioEmu's
+# breadth (868 domains mdCATH does not contain) plus its much deeper per-system
+# sampling produce a better *ensemble* model at matched steps?
+#
+# ONLY CORRECT AT 4 GPUs. DDP consumes world_size x grad_accum micro-batches per
+# step, so launching at another --nproc_per_node silently rescales the run.
+out_dir: runs/msr_cath2_10ep_4gpu
+seed: 20260728
+
+data:
+  source: bioemu                         # xtc + topology.pdb, not mdCATH HDF5
+  bioemu_dir: /nfs/lambda_stor_01/homes/heng.ma/dataset/bioemu_cath/MSR_cath2
+  # Shared with the mdCATH caches: BioEmu ids carry a `cath2_` prefix, so the 175
+  # CATH domains present in both cannot collide -- correct, since the two have
+  # different topologies, force fields and temperatures.
+  cache_dir: cache/featurized
+
+  # 990 training systems, 50 held out, of the 1,040 usable ones. Built by
+  # splits/prepare_msr_cath2.py, which forces the 16 systems that are also in
+  # val_496/test_60 into validation so mdCATH-trained checkpoints stay comparable
+  # on those sets. Lengths 51-199 residues, median 103.
+  #
+  # 1,040 not 1,043: the release ships cath2_3bdlA01, cath2_3bpqD00 and
+  # cath2_3dh3A01 with a topology.pdb but no trajs/ at all (confirmed against the
+  # zip's own central directory). available_systems() now requires an actual xtc,
+  # and the stream skips such a domain rather than raising -- one of them killed
+  # all four ranks at step ~1,300 on the first launch.
+  bioemu_domains_file: splits/msr_cath2_train.txt
+  bioemu_domains: []
+  bioemu_val_domains_file: splits/msr_cath2_val.txt
+  bioemu_val_domains: []
+  # One state per system, so a "unit" is a frame chunk rather than a
+  # (temperature, replica) cell. 5 units per domain spreads val_batches across
+  # 50 domains instead of exhausting the first one.
+  val_units_per_domain: 5
+  bioemu_temperature: null               # null = each system's own temperature_K
+
+  # skip_frames: 1, NOT mdCATH's 20. BioEmu already saves every 10 ns
+  # (`save_traj_ns` in its dataset.json), so any stride here throws away sampling
+  # that is coarse to begin with. At 1 a system yields ~3,950 frames (~40 us
+  # cumulative) and ~494 micro-batches; at 20 it would yield 25.
+  skip_frames: 1
+  frames_per_step: 8
+  max_len: 540                           # longest system is 199 residues
+  min_matched_fraction: 0.98             # every system maps at 1.000 after the
+                                         # ILE CD -> CD1 canonicalization
+  num_workers: 2                         # matches prod20; the xtc path reads a
+                                         # whole domain at once (~1.2 s per ~494
+                                         # micro-batches) rather than per-chunk
+  shuffle: true
+
+model:
+  model_name: biohub/ESMFold2
+  num_loops: 20
+  backend: ours
+  pretrained: true
+
+# Kept identical to prod20 so the comparison isolates the data. 300 K normalizes
+# to (300-379)/65 = -1.215 and never varies, so these numbers only set where that
+# constant lands -- retuning them would change nothing.
+temperature:
+  ref: 379.0
+  scale: 65.0
+  embed_dim: 451
+  hidden_dim: 256
+  num_fourier: 32
+
+optim:
+  # Every value below is prod20's, deliberately. This run differs from prod20 in
+  # its data and nothing else; re-tuning the optimizer would confound the two.
+  lr: 1.0e-5
+  weight_decay: 0.01
+  warmup_steps: 2000
+  # 10 epochs: 990 domains x 494 micro-batches = 489,060 micro-batches per epoch,
+  # and DDP consumes world_size x grad_accum = 4 x 4 = 16 per optimizer step, so an
+  # epoch is 30,566 steps and ten of them 305,660. At the measured 0.352 s/step that
+  # is ~30 h on 4 GPUs.
+  #
+  # NOT step-matched to prod20 -- runs/msr_cath2_4gpu (26,600 steps) is the arm that
+  # is, and it stays on disk. Read this one only against ITSELF across snapshots.
+  #
+  # Expect this to deepen the mode collapse rather than fix it. Every target in
+  # MSR_cath2 is a single ~3.2 A ensemble (splits/shared_spread.csv), so extra steps
+  # cannot supply the wide-ensemble targets the 26,600-step arm was missing; and on
+  # this project duration alone has previously *cost* cluster diversity (9.13 -> 6.93
+  # over 5k -> 26.5k steps on a fixed domain set). The per-epoch snapshots below are
+  # what make that measurable rather than assumed.
+  max_steps: 305660                     # 10 epochs (see the arithmetic below)
+  grad_accum: 4
+  grad_clip: 60.0
+  lr_min_ratio: 0.05
+  lr_schedule: wsd                       # flat middle, so this can be extended by
+                                         # moving the decay window rather than
+                                         # restarting an anneal
+  lr_decay_frac: 0.1
+  scheme: flow
+
+flow:
+  t_conditioning: add
+  time_dist: logitnormal
+  p_mean: -1.2
+  p_std: 2.2
+  weighting: velocity
+  t_min: 1.0e-3
+  num_sampling_steps: 50
+  sampler: euler
+  sigma_max: 256.0
+
+amp_dtype: bfloat16
+log_every: 20
+val_batches: 250                         # 50 domains x 5 units
+val_every: 15283                        # twice per epoch
+ckpt_every: 30566
+snapshot_every: 30566                    # one immutable snapshot per epoch (10 total,
+                                         # ~1.5 GB each as hardlinks), so the
+                                         # collapse-vs-duration curve is measurable
+                                         # from this single run
+resume: true
+
+wandb:
+  enabled: true
+  project: mol-ensemble-gen
+  tags: [bioemu, msr_cath2, finetune, single-temperature, 10ep]
+  mode: online
